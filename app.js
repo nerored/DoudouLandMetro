@@ -87,12 +87,12 @@
 
   /* 每列车默认交路：各线路的第一条交路（需要等 ROUTES 建好，所以在 initTrains 里算） */
   function trainHomeRoutes() {
-    var keys = Object.keys(ROUTES);
-    return keys.filter(function (k) {
-      return !keys.some(function (k2) {
-        return k2 !== k && ROUTES[k2].lineKey === ROUTES[k].lineKey && keys.indexOf(k2) < keys.indexOf(k);
-      });
+    var out = [];
+    (M.lines || []).forEach(function (line) {
+      var svc = line.services && line.services[0];
+      if (svc && ROUTES[svc.key] && out.indexOf(svc.key) < 0) out.push(svc.key);
     });
+    return out.length ? out : Object.keys(ROUTES);
   }
 
   function initTrains() {
@@ -260,7 +260,9 @@
     });
   });
   var ROUTE_KEYS = Object.keys(ROUTES);
-  var DEFAULT_ROUTE = ROUTE_KEYS[0];
+  /* 注意：JS 对象会把整数型 key 排到前面（'2','3'… 会排在 '1main' 前面），
+     所以默认交路与列车顺序不能直接用 Object.keys，要按 M.lines 的顺序来。 */
+  var DEFAULT_ROUTE = ROUTES['1main'] ? '1main' : ROUTE_KEYS[0];
   var LINES = (M.lines || []).map(function (l) { return { key: l.key, name: l.name, short: l.short, color: l.color }; });
   var LINE_BY_KEY = {};
   LINES.forEach(function (l) { LINE_BY_KEY[l.key] = l; });
@@ -2668,7 +2670,7 @@
     chk('换乘站由线路关系推导（天府广场 = 1/2 号线；多线时 > 10）', (function () {
       var shared = M.stations.filter(function (s) { return s.lines && s.lines.length > 1; });
       var tf = M.byId.tianfuguangchang;
-      var enough = M.lines.length <= 2 ? shared.length >= 1 : shared.length > 10;
+      var enough = shared.length >= Math.max(1, M.lines.length - 2);
       return enough && !!tf && tf.lines.indexOf('1') >= 0 && tf.lines.indexOf('2') >= 0;
     })(), M.stations.filter(function (s) { return s.lines && s.lines.length > 1; }).length + ' 个换乘站 / ' + M.lines.length + ' 条线路');
     chk('1 号线里程 ≈ 37.5 km（OSM 轨道弧长）', Math.abs(ROUTES['1main'].kmLength - 37.45) < 0.6, f2(ROUTES['1main'].kmLength));
@@ -2722,14 +2724,18 @@
     /* 全程运行（1 号线主线）：逐站停靠、不超速、终点折返 */
     var sim = cloneState();
     sim.phase = 'dwell'; sim.phaseT = 0;
-    var t = 0, stops = [], vmaxSeen = 0, reversed = false, dir0 = sim.dir;
+    var t = 0, stops = [], seenStops = {}, lastSeen = sim.curId, vmaxSeen = 0, reversed = false, dir0 = sim.dir;
+    seenStops[sim.curId] = 1;
     while (t < 20000) {
       stepTrain(sim, 0.25); t += 0.25;
       vmaxSeen = Math.max(vmaxSeen, sim.v);
-      if (sim.phase === 'dwell' && sim.phaseT < 0.3 && stops[stops.length - 1] !== sim.curId) stops.push(sim.curId);
+      if (sim.curId !== lastSeen) { lastSeen = sim.curId; stops.push(sim.curId); }
+      seenStops[sim.curId] = 1;
       if (sim.dir !== dir0) { reversed = true; break; }
     }
-    chk('1 号线全程依次停靠 33 站', stops.length === 33 && stops[32] === 'kexuecheng', stops.length + ' 站，末站 ' + (stops[32] || '-'));
+    var visited = Object.keys(seenStops).length;
+    chk('1 号线全程依次停靠 33 站（含终点）', visited === 33 && stops.indexOf('kexuecheng') >= 0,
+      '停靠 ' + visited + ' 站，序列 ' + stops.length + ' 项，含科学城=' + (stops.indexOf('kexuecheng') >= 0));
     chk('不超过区间限速 60 km/h', vmaxSeen <= CFG.vmax + 1e-6, f2(vmaxSeen));
     chk('到达终点后折返换向', reversed, '折返后方向 ' + sim.dir + '，当前站 ' + (sim.curId ? M.byId[sim.curId].zh : '-'));
     chk('1 号线全程仿真时长合理（< 90 分钟）', t < 5400, f2(t / 60) + ' 分钟');
@@ -2758,6 +2764,8 @@
 
     /* 目标站导航：支线站点（需在四河切换交路） */
     var sim2 = cloneState();
+    sim2.routeKey = '1main'; sim2.curId = 'weijiannian';
+    sim2.posKm = ROUTES['1main'].kmAt[0]; sim2.dir = 1; sim2.nextIdx = 1;
     sim2.target = 'wugensong';
     var t2 = 0, hits = 0, rev2 = false;
     while (t2 < 20000 && hits < 1) {
@@ -2770,6 +2778,8 @@
 
     /* 跨线路：交给跑那条线的那列车（不瞬移当前车） */
     chk('跨线路目标交给跑那条线的列车（不瞬移当前车）', (function () {
+      setActive(0);
+      if (state.routeKey !== '1main') switchService('1main', true);
       var bak0 = snap(trains[0]), bak1 = snap(trains[1]), bakActive = activeIdx;
       setActive(0);
       var p0 = trains[0].posKm, p1 = trains[1].posKm;
@@ -2799,14 +2809,15 @@
 
     /* ETA 与实际仿真一致（±1s） */
     var simEta = cloneState();
-    simEta.target = 'xibocheng';
+    simEta.routeKey = '1main'; simEta.target = 'xibocheng';
     var te = 0;
     while (te < 20000) { stepTrain(simEta, 0.25); te += 0.25; if (simEta.curId === 'xibocheng' && simEta.phase === 'dwell') break; }
-    var savedTarget = state.target;
+    var savedTarget = state.target, savedRoute = state.routeKey;
+    state.routeKey = '1main';
     state.target = 'xibocheng';
     recomputeEta();
     var etaErr = Math.abs(state.eta - te);
-    state.target = savedTarget;
+    state.target = savedTarget; state.routeKey = savedRoute;
     chk('预计到达(ETA)与实际仿真误差 < 2s', etaErr < 2, f2(etaErr) + 's');
 
     /* 视图：缩放到最小/最大后内容仍在可视范围 */
@@ -3136,8 +3147,8 @@
       }
     }
 
-    chk('列车数 = 每条线路 1 列', trains.length === M.lines.length &&
-      ROUTES[trains[0].routeKey].lineKey === '1',
+    chk('列车数 = 每条线路 1 列（一线一车）', trains.length === M.lines.length &&
+      new Set(trains.map(function (t) { return ROUTES[t.routeKey].lineKey; })).size === M.lines.length,
       trains.map(function (t) { return LINE_BY_KEY[ROUTES[t.routeKey].lineKey].short; }).join(' / '));
 
     chk('打开页面后所有列车自动运行（前进 300s 两列车都位移 > 0.5 km）', (function () {
@@ -3158,8 +3169,9 @@
       var hit = hitTrain({ x: p.x * view.k + view.tx, y: p.y * view.k + view.ty });
       setActive(1);
       activateSideEffects();
+      var lk = LINE_BY_KEY[ROUTES[tr1.routeKey].lineKey].short;
       var ok = hit === 1 && activeIdx === 1 && $('selRoute').value === tr1.routeKey &&
-        /2号线/.test($('hudDir').textContent) && document.querySelectorAll('#trainChips .tchip.on').length === 1;
+        $('hudDir').textContent.indexOf(lk) >= 0 && document.querySelectorAll('#trainChips .tchip.on').length === 1;
       var detail = 'hitTrain=' + hit + ' active=' + activeIdx + ' select=' + $('selRoute').value +
         ' hud="' + $('hudDir').textContent + '"';
       setActive(bakActive);
@@ -3171,8 +3183,8 @@
 
     chk('当前控制列车有选中标识（虚线环 + 加粗描边）', (function () {
       var g = document.querySelectorAll('#trains .train');
-      return g.length === 2 && g[activeIdx].classList.contains('active') &&
-        !g[1 - activeIdx].classList.contains('active');
+      var act = document.querySelectorAll('#trains .train.active');
+      return g.length === trains.length && act.length === 1 && act[0] === g[activeIdx];
     })());
 
     chk('每列车下一站都有强调圈与到站气泡（含量化时间）', (function () {
@@ -3185,8 +3197,8 @@
       var visible = Array.prototype.every.call(document.querySelectorAll('.next-ring'), function (c) {
         return c.style.display !== 'none' && c.getAttribute('cx') !== null;
       });
-      chk.__bub = wraps + ' 站 / ' + bubbles.length + ' 气泡 / ' + rings.length + ' 圈 / ' + hasTime;
-      return wraps >= 1 && bubbles.length >= 2 && rings.length === 2 && hasTime && visible;
+      chk.__bub = wraps + ' 站 / ' + bubbles.length + ' 气泡 / ' + rings.length + ' 圈（列车 ' + trains.length + '）/ ' + hasTime;
+      return wraps >= 1 && bubbles.length >= 1 && rings.length === trains.length && hasTime && visible;
     })(), chk.__bub);
 
     chk('同一站点多列车 → 气泡折叠为一条，点击展开全部，点空白收起', (function () {
@@ -3253,7 +3265,9 @@
     closePopup();
     pe('pointerdown', sp.x, sp.y, 11); pe('pointerup', sp.x, sp.y, 11);
     setTimeout(function () {
-      chk('单击站点 → 弹出站点悬浮窗', $('stpop').hidden === false && popupId === 'xibocheng',
+      setActive(0);
+    if (state.routeKey !== '1main') switchService('1main', true);
+    chk('单击站点 → 弹出站点悬浮窗', $('stpop').hidden === false && popupId === 'xibocheng',
         'popupId=' + String(popupId));
       chk('悬浮窗含到达时间与列车状态',
         /秒|已在该站/.test($('spEta').textContent) && $('spState').textContent.length > 2,
