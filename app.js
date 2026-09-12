@@ -34,6 +34,7 @@
     platHW: 8.5,           // 站台半宽
     stub: 120,             // 端点站外的折返线长度（地图单位，要能容下整列车）
     tapRadius: 30,         // 站点命中半径（屏幕 px，直径 60 >= 44）
+    smallPillW: 480,       // 舞台宽度小于此值时：列车贴片只留当前列车、只弹当前列车的气泡（强调圈照画）
     tapMove: 13,           // 判定为拖动的最小位移（屏幕 px）
     tapMs: 2500,           // 静止按压超过该时长仍算选中（只是手感提示，不做拒绝）
     dblMs: 320,            // 双击间隔
@@ -753,7 +754,10 @@
   }
 
   function updateLabelScale() {
-    labelScale = clamp(1 / view.k, 0.34, 2.0);
+    /* 站名标签屏幕恒定：字号 15 地图单位 × labelScale × view.k = 15px 屏幕。
+       以前把 labelScale 封顶在 2.0，低缩放下标签会缩成 3px 的噪声（看得见但读不着）；
+       现在不封顶——标签一多，就交给小视口预算 + 防重叠去淘汰，数量可控、字号不糊。 */
+    labelScale = Math.max(0.34, 1 / view.k);
     var all = view.k >= CFG.fadeLabels;
     labelEls.forEach(function (L) {
       var vis = all || L.key;
@@ -985,6 +989,9 @@
   function updateNextMarks(dtRaw) {
     var now = performance.now();
     var groups = {};
+    /* 小舞台（手机）上气泡只给当前控制列车：17 列车的话站名上方会被贴满。
+       强调圈（下一站在哪）看颜色就能认，继续全画，不牺牲“每列车都有下一站标记”。 */
+    var onlyActiveBubbles = stage.w < CFG.smallPillW;
     trains.forEach(function (tr, ti) {
       var mk = markEls[ti];
       if (!mk) return;
@@ -1008,6 +1015,7 @@
       mk.ring.style.stroke = col;
       mk.halo.style.display = mk.ring.style.display = '';
       mk.halo.classList.toggle('on', ti === activeIdx);
+      if (onlyActiveBubbles && ti !== activeIdx) return;     // 不弹气泡，但强调圈已画好
       (groups[sid] = groups[sid] || []).push({ ti: ti, sec: info.sec, note: info.note, tr: tr });
     });
     renderBubbles(groups);
@@ -1100,12 +1108,16 @@
     });
     var solo = Object.keys(ui.showLines || {}).length > 0;
     $('legend').classList.toggle('filtering', solo);
-    /* 图例色块的选中态 */
+    /* 线路色块的选中态（线路 tab 里的 17 个 chip） */
     var box = $('lgLines');
     if (box) {
       Array.prototype.forEach.call(box.children, function (b) {
         var k = b.getAttribute('data-line');
+        var sel = solo && !!ui.showLines[k];
+        b.classList.toggle('on', sel);
         b.classList.toggle('off', solo && !ui.showLines[k]);
+        b.setAttribute('aria-pressed', sel ? 'true' : 'false');
+        b.style.color = sel ? (b.querySelector('i') ? b.querySelector('i').style.background : '') : '';
       });
     }
     updateNextMarks();          /* 被隐藏的线路不再弹到站气泡 */
@@ -1116,12 +1128,14 @@
     if (!box) return;
     box.innerHTML = '';
     LINES.forEach(function (l) {
+      var line = M.lines.filter(function (x) { return x.key === l.key; })[0];
+      var n = line && line.services[0] ? line.services[0].stationIds.length : 0;
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'lg-chip';
       b.setAttribute('data-line', l.key);
-      b.style.background = l.color;
-      b.textContent = l.key;
+      b.setAttribute('aria-pressed', 'false');
+      b.innerHTML = '<i style="background:' + l.color + '"></i>' + l.short + '<em>' + n + '</em>';
       b.title = l.name + '（点一下只看该线，可多选）';
       b.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -1193,10 +1207,13 @@
   function positionBubbles() {
     var res = reservedBoxes();
     var placed = [];
-    /* 列车标签优先（它是“哪列车”的关键标识） */
+    /* 列车标签优先（它是“哪列车”的关键标识）；小屏幕上只留当前控制列车那一个，
+       其余先藏起来——17 张贴片会把手机地图盖满（点面板里的“切换列车”仍可换车）。 */
+    var onlyActivePill = stage.w < CFG.smallPillW;
     trains.forEach(function (tr, ti) {
       var b = pillEls[ti];
       if (!b) return;
+      if (onlyActivePill && ti !== activeIdx) { b.style.visibility = 'hidden'; return; }
       var route = ROUTES[tr.routeKey];
       var hp = pointAt(route, kmToMap(route, tr.posKm));
       placeAvoiding(b, hp.x * view.k + view.tx, hp.y * view.k + view.ty,
@@ -1594,10 +1611,14 @@
 
   function fitView() {
     var c = contentBox();
-    var k = Math.min(stage.w / (c.x1 - c.x0), stage.h / (c.y1 - c.y0));
-    view.k = clamp(k, 0.12, 20);
+    /* 可见区域 = 舞台减去抽屉遮住的部分，宁可让线路落在可见带里，
+       否则竖屏上「全网」会正好被抽屉压掉一半 */
+    var visH = Math.max(120, stage.h - (sheet.visH || 0));
+    var k = Math.min(stage.w / (c.x1 - c.x0), visH / (c.y1 - c.y0));
+    /* 下限放宽到 0.04：手机上「全网适配」需要 k≈0.09，以前卡在 0.12 会把远端线路切出屏幕 */
+    view.k = clamp(k, 0.04, 20);
     view.tx = stage.w / 2 - (c.x0 + c.x1) / 2 * view.k;
-    view.ty = stage.h / 2 - (c.y0 + c.y1) / 2 * view.k;
+    view.ty = visH / 2 - (c.y0 + c.y1) / 2 * view.k;
     view.fitted = true;
     clampView();
     applyView();
@@ -1786,6 +1807,181 @@
     applyView();
   }
 
+  /* ==================================================== 控制区：tab + 抽屉
+     设计契约见 DESIGN.md §4「Shell」：宽屏横屏是右侧 dock，手机/竖屏是底部抽屉（同一套 DOM），
+     #panelBody 是**唯一**的滚动归属；抽屉三档 peek/half/full 只动 transform（--sheet-t）。 */
+  var TABS = ['lines', 'train', 'nav', 'stations'];
+  var activeTab = 'train';
+  var MQ_DOCK = (window.matchMedia ? window.matchMedia('(min-width: 760px) and (min-aspect-ratio: 1/1)') : null);
+  var sheet = { snap: 'half', force: null, visH: 0 };   // force：自检里强制走抽屉分支；visH：抽屉当前遮住多少
+
+  function setIcon(btn, iconId) {
+    var u = btn && btn.querySelector('use');
+    if (u) u.setAttribute('href', '#' + iconId);
+  }
+  function setLabel(btn, txt) {
+    if (!btn) return;
+    var l = btn.querySelector('.lbl');
+    if (l) l.textContent = txt; else btn.textContent = txt;
+  }
+  function sheetMode() {
+    if (sheet.force) return sheet.force === 'sheet';
+    return MQ_DOCK ? !MQ_DOCK.matches : true;
+  }
+
+  /* ---- tab：一次只显示一个 pane，aria-selected 唯一 ---- */
+  function setTab(name) {
+    if (TABS.indexOf(name) < 0) name = 'train';
+    activeTab = name;
+    TABS.forEach(function (t) {
+      var btn = $('tabBtn-' + t), pane = $('tab-' + t);
+      var on = (t === name);
+      if (btn) { btn.setAttribute('aria-selected', on ? 'true' : 'false'); btn.tabIndex = on ? 0 : -1; }
+      if (pane) pane.hidden = !on;
+    });
+    var body = $('panelBody');
+    if (body) body.scrollTop = 0;
+  }
+  function initTabs() {
+    var bar = $('tabs');
+    if (!bar) return;
+    TABS.forEach(function (t) {
+      var btn = $('tabBtn-' + t);
+      if (btn) btn.addEventListener('click', function () { setTab(t); });
+    });
+    bar.addEventListener('keydown', function (e) {
+      var i = TABS.indexOf(activeTab), n = -1;
+      if (e.key === 'ArrowRight') n = (i + 1) % TABS.length;
+      else if (e.key === 'ArrowLeft') n = (i - 1 + TABS.length) % TABS.length;
+      else if (e.key === 'Home') n = 0;
+      else if (e.key === 'End') n = TABS.length - 1;
+      if (n < 0) return;
+      e.preventDefault();
+      setTab(TABS[n]);
+      var b = $('tabBtn-' + TABS[n]);
+      if (b) b.focus();
+    });
+    setTab(activeTab);
+  }
+
+  /* ---- 抽屉：peek（把手 + tab + 状态胶囊）/ half / full ----
+     几何：面板底边钉在视口底部，用 translateY **向下**推（panelH - 可见高）——
+     推得越多，露出的越是面板**顶部**的把手与 tab（这才是收起状态该看到的东西）。 */
+  function sheetGeom() {
+    var panel = $('panel'), h = $('sheetHandle'), tb = $('tabs');
+    var panelH = panel ? panel.getBoundingClientRect().height : 0;
+    var peek = (h ? h.offsetHeight : 56) + (tb ? tb.offsetHeight : 52);
+    var vh = window.innerHeight || 800;
+    return { panelH: panelH, peek: peek, half: Math.min(vh * 0.52, 460), full: Math.min(vh * 0.86, 760) };
+  }
+  function applySnap(name) {
+    if (['peek', 'half', 'full'].indexOf(name) < 0) name = 'half';
+    var app = $('app'), h = $('sheetHandle');
+    if (!sheetMode()) {
+      app.setAttribute('data-snap', 'dock');
+      app.style.setProperty('--sheet-h', '0px');
+      app.style.removeProperty('--sheet-t');
+      sheet.visH = 0;
+      sheet.snap = name;
+      if (h) h.setAttribute('aria-expanded', 'true');
+      layoutLabels(); positionBubbles();
+      return;
+    }
+    var g = sheetGeom();
+    var vis = Math.max(g.peek, Math.min(g.panelH, g[name] || g.half));
+    app.setAttribute('data-snap', name);
+    app.style.setProperty('--sheet-t', Math.round(g.panelH - vis) + 'px');
+    app.style.setProperty('--sheet-h', Math.round(vis) + 'px');
+    if (h) h.setAttribute('aria-expanded', name === 'full' ? 'true' : 'false');
+    sheet.visH = vis;
+    sheet.snap = name;
+    if (view.fitted) fitView();          // 抽屉高度变了，全网适配跟着重新居中
+    layoutLabels();
+    positionBubbles();
+  }
+  function cycleSnap() {
+    applySnap(sheet.snap === 'peek' ? 'half' : (sheet.snap === 'half' ? 'full' : 'peek'));
+  }
+  function initSheet() {
+    var h = $('sheetHandle');
+    if (!h) return;
+    var drag = null;
+    h.addEventListener('pointerdown', function (e) {
+      if (!sheetMode()) return;
+      var g = sheetGeom();
+      var t0 = parseFloat(getComputedStyle($('app')).getPropertyValue('--sheet-t')) || 0;
+      drag = { id: e.pointerId, y0: e.clientY, t0: t0, panelH: g.panelH, peek: g.peek, moved: 0 };
+      sheet.dragging = true;
+      h.setPointerCapture(e.pointerId);
+      $('panel').classList.add('dragging');
+    });
+    h.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      var dy = e.clientY - drag.y0;
+      drag.moved = Math.max(drag.moved, Math.abs(dy));
+      var t = Math.max(0, Math.min(drag.panelH - drag.peek, drag.t0 + dy));
+      $('app').style.setProperty('--sheet-t', Math.round(t) + 'px');
+      $('app').style.setProperty('--sheet-h', Math.round(drag.panelH - t) + 'px');
+    });
+    function end() {
+      if (!drag) return;
+      var panel = $('panel'), g = sheetGeom();
+      panel.classList.remove('dragging');
+      sheet.dragging = false;
+      var t = parseFloat($('app').style.getPropertyValue('--sheet-t')) || 0;
+      var vis = g.panelH - t;
+      var moved = drag.moved;
+      drag = null;
+      if (moved < 6) { cycleSnap(); return; }        // 没拖动 = 点一下，循环三档
+      var cands = [['peek', g.peek], ['half', g.half], ['full', g.full]];
+      var best = cands[0], bd = Infinity;
+      cands.forEach(function (c) {
+        var d = Math.abs(vis - Math.min(g.panelH, c[1]));
+        if (d < bd) { bd = d; best = c; }
+      });
+      applySnap(best[0]);
+    }
+    h.addEventListener('pointerup', end);
+    h.addEventListener('pointercancel', end);
+    h.addEventListener('click', function (e) { if (e.detail === 0) cycleSnap(); });  // 键盘 Enter
+  }
+
+  /* ---- 站点搜索 ---- */
+  function initStationSearch() {
+    var inp = $('stSearch'), clr = $('stSearchClear');
+    if (!inp) return;
+    inp.addEventListener('input', function () {
+      if (clr) clr.hidden = !inp.value;
+      renderStationList();
+    });
+    if (clr) clr.addEventListener('click', function () {
+      inp.value = ''; clr.hidden = true; renderStationList(); inp.focus();
+    });
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Escape') { inp.value = ''; clr.hidden = true; renderStationList(); } });
+  }
+
+  /* 图例折叠：默认只留符号一行（展开看版权/底图说明） */
+  function initLegendFold() {
+    var btn = $('lgFold'), meta = $('lgMeta');
+    if (!btn || !meta) return;
+    btn.addEventListener('click', function () {
+      var open = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+      meta.hidden = open;
+    });
+  }
+
+  /* 线路 tab 的统计 + tab 上的计数 */
+  function buildStatCounts() {
+    var nSt = M.stations.length;
+    var nLines = (M.lines || []).length;
+    var nTr = M.stations.filter(function (s) { return s.lines && s.lines.length > 1; }).length;
+    setText('statLines', nLines);
+    setText('statServices', ROUTE_KEYS.length);
+    setText('statStations', nSt);
+    setText('statTransfer', nTr);
+  }
+
   /* ==================================================== 面板 / HUD 更新 */
   var hudCache = {};
   function setText(id, txt) {
@@ -1811,7 +2007,14 @@
 
   function updateHud() {
     var route = ROUTES[state.routeKey];
-    setText('hudDir', boundText(state) + ' · ' + dirName(route, state.dir) + ' · ' + lineOf(state.routeKey).short);
+    var line = lineOf(state.routeKey);
+    var curName = state.curId ? M.byId[state.curId].zh : '—';
+    var nx = nextStopOf(state);
+    var nxName = state.phase === 'reverse' ? '折返换向' : (nx ? M.byId[nx].zh : '—');
+    var spd = state.v.toFixed(0) + ' km/h';
+    var tgt = state.target ? M.byId[state.target].zh : '';
+
+    setText('hudDir', boundText(state) + ' · ' + dirName(route, state.dir) + ' · ' + line.short);
     var doorEl = $('hudDoor');
     var doorTxt, doorCls;
     if (state.phase === 'dwell' && state.doorPhase === 'opening') { doorTxt = '开门中'; doorCls = 'opening'; }
@@ -1824,16 +2027,38 @@
       doorEl.className = 'chip chip-door ' + doorCls;
     }
     setText('hudPhase', phaseLabel());
-    setText('hudCur', (state.curId ? M.byId[state.curId].zh : '—') + ' 站');
-    var nx = nextStopOf(state);
-    setText('hudNext', state.phase === 'reverse' ? '折返换向' : (nx ? M.byId[nx].zh + ' 站' : '—'));
-    setText('hudTarget', state.target ? M.byId[state.target].zh + ' 站' : '—');
+    /* 状态胶囊（HUD 折叠后仍可见）+ 抽屉把手里的同一份状态 */
+    setText('hudCur', curName);
+    setText('hudNext', nxName);
+    setText('hudSpeed', spd);
+    setText('hudCur2', curName + ' 站');
+    setText('sheetCur', curName);
+    setText('sheetNext', nxName);
+    setText('sheetSt', spd);
+    setText('hudTarget', tgt ? tgt + ' 站' : '—');
     setText('hudOdo', state.odometer.toFixed(2) + ' km');
-    setText('hudSpeed', state.v.toFixed(0) + ' km/h');
     setText('hudEta', state.eta != null ? fmtDur(state.eta) : '—');
-    setText('tgName', state.target ? M.byId[state.target].zh + ' 站' : '未设置');
+    setText('tgName', tgt ? tgt + ' 站' : '未设置');
+    setText('tgName2', tgt ? tgt + ' 站' : '未设置');
     setText('tgEta', state.eta != null ? fmtDur(state.eta) + '（实时 ' + fmtDur(state.eta / timeRatio()) + '）' : '—');
+    setText('tgEta2', state.eta != null ? fmtDur(state.eta) : '—');
     setText('tgStops', state.etaStops ? state.etaStops + ' 站' : '—');
+    setText('tgStops2', state.etaStops ? state.etaStops + ' 站' : '—');
+    /* 列车 tab 的当前列车卡 */
+    setText('curLine', line.short);
+    setText('curNow', curName);
+    setText('curNext', nxName);
+    setText('curPhase', phaseLabel());
+    setText('curSpeed', spd);
+    setText('curOdo', state.odometer.toFixed(2) + ' km');
+    /* 徽标用线路自己的颜色（线路色只表示线路） */
+    if (hudCache.__badge !== line.color) {
+      hudCache.__badge = line.color;
+      ['hudLineBadge', 'sheetBadge', 'curBadge'].forEach(function (id) {
+        var el = $(id);
+        if (el) { el.style.background = line.color; el.textContent = line.short.replace('号线', '').replace('市域铁路 ', ''); }
+      });
+    }
   }
 
   var toastT = null;
@@ -1845,11 +2070,43 @@
     toastT = setTimeout(function () { el.classList.remove('show'); }, 2600);
   }
 
-  /* 站点列表 */
+  /* 站点列表：按线路/交路分组的折叠块 + 搜索（366 站，搜索是必需的） */
+  var groupEls = [];
+  var lastScrolledKey = null;
+  function stationRow(id, noText) {
+    var st = M.byId[id];
+    if (!st) return null;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'row-btn';
+    b.setAttribute('data-st', id);
+    var no = document.createElement('span');
+    no.className = 'no';
+    no.textContent = noText;
+    var nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = st.zh;
+    b.appendChild(no);
+    b.appendChild(nm);
+    if (st.en) {
+      var en = document.createElement('span');
+      en.className = 'en';
+      en.textContent = st.en;
+      b.appendChild(en);
+    }
+    if (st.lines && st.lines.length > 1) {
+      var t0 = document.createElement('span'); t0.className = 'tag tr';
+      t0.textContent = '换乘'; b.appendChild(t0);
+    }
+    if (st.status) { var t3 = document.createElement('span'); t3.className = 'tag'; t3.textContent = st.status; b.appendChild(t3); }
+    b.addEventListener('click', function () { setTarget(id); updateStationList(); });
+    return b;
+  }
+
   function buildStationList() {
     var box = $('stlist');
     box.innerHTML = '';
-    var groups = [];
+    groupEls = [];
     (M.lines || []).forEach(function (line) {
       line.services.forEach(function (svc, si) {
         var r = ROUTES[svc.key];
@@ -1868,7 +2125,7 @@
         head.className = 'grp';
         head.setAttribute('data-svc', svc.key);
         head.textContent = line.short + (line.services.length > 1 ? (si === 0 ? ' 主线' : ' 支线') : '') +
-          '（' + svc.label + '）';
+          '（' + ids.length + ' 站）';
         var body = document.createElement('div');
         body.className = 'stgrp-body';
         head.addEventListener('click', function () {
@@ -1878,41 +2135,51 @@
         wrap.appendChild(head);
         wrap.appendChild(body);
         box.appendChild(wrap);
-        groups.push({ line: line.key, svc: svc.key, wrap: wrap, body: body });
+        groupEls.push({ line: line.key, svc: svc.key, wrap: wrap, body: body });
         ids.slice(from).forEach(function (id, k) {
-          var st = M.byId[id];
-          if (!st) return;
           var seq = from + k;
-          var b = document.createElement('button');
-          b.type = 'button';
-          b.setAttribute('data-st', id);
-          var no = document.createElement('span');
-          no.className = 'no';
-          no.textContent = (si > 0 && line.services.length > 1)
+          var noText = (si > 0 && line.services.length > 1)
             ? ('0' + line.key + '|Y' + (seq - from + 1))
             : (line.short.replace('号线', '') + '|' + String(seq + 1).padStart(2, '0'));
-          var nm = document.createElement('span');
-          nm.className = 'nm';
-          nm.textContent = st.zh;
-          b.appendChild(no);
-          b.appendChild(nm);
-          if (st.lines && st.lines.length > 1) {
-            var t0 = document.createElement('span'); t0.className = 'tag tr';
-            t0.textContent = '换乘'; b.appendChild(t0);
-          }
-          if (st.status) { var t3 = document.createElement('span'); t3.className = 'tag'; t3.textContent = st.status; b.appendChild(t3); }
-          b.addEventListener('click', function () { setTarget(id); updateStationList(); });
-          body.appendChild(b);
+          var row = stationRow(id, noText);
+          if (row) body.appendChild(row);
         });
       });
     });
-    groupEls = groups;
     $('stCount').textContent = '共 ' + M.stations.length + ' 站 · ' + (M.lines || []).length + ' 条线路';
     openGroupForLine(ROUTES[state.routeKey].lineKey);
     updateStationList();
   }
 
-  var groupEls = [];
+  /* 搜索：命中就平铺成结果列表（带线路短名），清空后恢复分组浏览 */
+  function renderStationList() {
+    var box = $('stlist'), inp = $('stSearch'), clr = $('stSearchClear');
+    if (!box) return;
+    var q = (inp && inp.value ? inp.value : '').trim().toLowerCase();
+    if (clr) clr.hidden = !q;
+    if (!q) { buildStationList(); return; }
+    var hits = [];
+    M.stations.forEach(function (s) {
+      if (s.zh.toLowerCase().indexOf(q) >= 0 || (s.en || '').toLowerCase().indexOf(q) >= 0) hits.push(s);
+    });
+    box.innerHTML = '';
+    if (!hits.length) {
+      var e = document.createElement('div');
+      e.className = 'st-empty';
+      e.textContent = '没有匹配「' + q + '」的站点';
+      box.appendChild(e);
+    } else {
+      hits.slice(0, 60).forEach(function (s) {
+        var lk = (s.lines && s.lines[0]) || '1';
+        var l = LINE_BY_KEY[lk];
+        var row = stationRow(s.id, l ? l.short.replace('号线', '').replace('市域铁路 ', '') : lk);
+        if (row) box.appendChild(row);
+      });
+    }
+    setText('stCount', '共 ' + M.stations.length + ' 站 · 匹配 ' + hits.length + ' 站');
+    updateStationList();
+  }
+
   function openGroupForLine(lineKey) {
     groupEls.forEach(function (g) { g.wrap.classList.toggle('open', g.line === lineKey); });
   }
@@ -1944,18 +2211,20 @@
     }
   }
 
-  /* 站点列表跟随当前列车：把当前站滚进可视区 */
-  var lastScrolledKey = null;
+  /* 站点列表跟随当前列车：把当前站滚进面板可视区。
+     注意：绝不能用 scrollIntoView——它会把所有可滚祖先（包括 document）一起滚，
+     固定外壳一旦被滚就会“整页错位”（实测：抽屉全开时页面被滚走 145px，标签/面板全对不上）。 */
   function scrollListToActive() {
-    var box = $('stlist');
-    if (!box) return;
+    var body = $('panelBody'), box = $('stlist');
+    if (!body || !box) return;
     var key = activeIdx + '|' + state.curId;
     if (key === lastScrolledKey) return;
     lastScrolledKey = key;
     var b = box.querySelector('[data-st="' + state.curId + '"]');
-    if (!b || !b.scrollIntoView) return;
-    try { b.scrollIntoView({ block: 'nearest' }); }
-    catch (e) { try { b.scrollIntoView(false); } catch (e2) { void e2; } }
+    if (!b) return;
+    var br = b.getBoundingClientRect(), pr = body.getBoundingClientRect();
+    if (br.top < pr.top + 6) body.scrollTop -= (pr.top + 6 - br.top);
+    else if (br.bottom > pr.bottom - 6) body.scrollTop += (br.bottom - pr.bottom + 6);
   }
 
   /* ============================================ 版本戳与「检查更新 / 刷新」
@@ -2331,16 +2600,20 @@
     }
     updateTtsHint();
   }
+  /* 声音按钮：文案 + 图标（内联 SVG）一起换 */
+  function paintSoundBtn() {
+    var b = $('btnSound');
+    if (!b) return;
+    setLabel(b, audio.on ? '声音开' : '声音关');
+    setIcon(b, audio.on ? 'ic-sound-on' : 'ic-sound-off');
+    b.setAttribute('aria-pressed', audio.on ? 'true' : 'false');
+    b.classList.toggle('btn-on', audio.on);
+  }
   function bindAudioUnlock() {
     ['pointerdown', 'touchstart', 'keydown'].forEach(function (ev) {
       document.addEventListener(ev, unlockAudio, { passive: true });
     });
-    var b = $('btnSound');
-    if (b) {
-      b.textContent = audio.on ? '🔊 声音开' : '🔇 声音关';
-      b.setAttribute('aria-pressed', audio.on ? 'true' : 'false');
-      b.classList.toggle('btn-on', audio.on);
-    }
+    paintSoundBtn();
   }
 
   /* 语音自检提示（面板里显示；iOS 主屏 standalone 不支持 TTS 时告知用户该怎么办） */
@@ -2427,12 +2700,7 @@
 
   function setSound(on) {
     audio.on = !!on;
-    var b = $('btnSound');
-    if (b) {
-      b.textContent = audio.on ? '🔊 声音开' : '🔇 声音关';
-      b.setAttribute('aria-pressed', audio.on ? 'true' : 'false');
-      b.classList.toggle('btn-on', audio.on);
-    }
+    paintSoundBtn();
     if (audio.on) {
       var ctx = initAudio();
       if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
@@ -2584,8 +2852,22 @@
     bindControls();
     bindVersionUI();
     bindAudioUnlock();
+    initLegendFold();
+    initStationSearch();
+    initTabs();
+    initSheet();
+    buildStatCounts();
     updateTtsHint();
     resize();
+    /* 抽屉默认半开：竖屏手机上「半开」的可见地图带（≈ 384px）刚好装得下整条线网，
+       控件也同时可用；想看满屏地图就把把手往下拖到 peek */
+    var smallPhone = sheetMode() && window.innerWidth < 560;
+    applySnap('half');
+    if (smallPhone) {                       // 小屏默认折叠 HUD 详情，把地图让出来
+      $('hud').classList.add('folded');
+      var hb = $('hudBrand');
+      if (hb) hb.setAttribute('aria-expanded', 'false');
+    }
     fitView();
     /* 调试/截图用参数：?adv=秒数 预跑运行模拟, ?follow=1 跟随, ?k=缩放, ?door=1 开门状态 */
     debugParams();
@@ -2678,6 +2960,8 @@
     if (view.fitted) fitView(); else { clampView(); applyView(); updateLabelScale(); }
     updateScaleBar();
     positionPopup();
+    /* 抽屉/浮层的几何跟着视口尺寸走（拖动中不打断） */
+    if (typeof sheet !== 'undefined' && !sheet.dragging) applySnap(sheet.snap);
   }
   /* 调试参数（仅影响本地演示/自动化截图，不影响正常使用） */
   function debugParams() {
@@ -2717,13 +3001,18 @@
     if (map.train) { var ti = parseInt(map.train, 10) - 1; if (setActive(ti)) activateSideEffects(); }
     if (map.sound) setSound(map.sound !== '0');
     if (map.speak) speak(decodeURIComponent(map.speak));
-    if (map.panel === 'hide') { $('app').classList.add('panel-hidden'); $('btnPanel').textContent = '☰ 控制'; }
+    if (map.panel === 'hide') {
+      $('app').classList.add('panel-hidden');
+      setLabel($('btnPanel'), '控制');
+      setIcon($('btnPanel'), 'ic-panel');
+    }
   }
 
   function bindControls() {
     $('btnPlay').addEventListener('click', function () {
       ui.paused = !ui.paused;
-      this.textContent = ui.paused ? '▶︎ 继续' : '⏸ 暂停';
+      setLabel(this, ui.paused ? '继续' : '暂停');
+      setIcon(this, ui.paused ? 'ic-play' : 'ic-pause');
       updateHud();
     });
     $('btnReset').addEventListener('click', function () {
@@ -2751,8 +3040,9 @@
     $('btnPanel').addEventListener('click', function () {
       var hidden = $('app').classList.toggle('panel-hidden');
       this.setAttribute('aria-expanded', hidden ? 'false' : 'true');
-      this.textContent = hidden ? '☰ 控制' : '✕ 收起面板';
-      toast(hidden ? '已收起控制面板（点左上“☰ 控制”可展开）' : '控制面板已展开');
+      setLabel(this, hidden ? '控制' : '收起');
+      setIcon(this, hidden ? 'ic-panel' : 'ic-close');
+      toast(hidden ? '已收起控制面板（点地图右上角「控制」可展开）' : '控制面板已展开');
       requestAnimationFrame(function () { resize(); });
     });
     $('hud').addEventListener('click', function (e) {
@@ -3117,24 +3407,27 @@
       return location.href === before;               // 同版本时只提示，不跳转
     })());
 
-    chk('刷新/声音按钮已内嵌 HUD；HUD 与图例左对齐、上下留缝一致，且按钮文字不截断', (function () {
-      var hud = $('hud').getBoundingClientRect(), lg = $('legend').getBoundingClientRect();
+    chk('刷新/声音按钮内嵌在 HUD 里、高 ≥44px、图标是内联 SVG、文字不截断', (function () {
+      var hudRect = $('hud').getBoundingClientRect(), lg = $('legend').getBoundingClientRect();
       var st = $('stage').getBoundingClientRect();
       var hard = $('btnHardRefresh'), snd = $('btnSound');
       var hr = hard.getBoundingClientRect(), sr = snd.getBoundingClientRect();
-      var leftDiff = Math.abs(hud.left - lg.left);
-      var topGap = hud.top - st.top, bottomGap = st.bottom - lg.bottom;
+      var leftDiff = Math.abs(hudRect.left - lg.left);
+      var topGap = hudRect.top - st.top, bottomGap = st.bottom - lg.bottom;
       var gapDiff = Math.abs(topGap - bottomGap);
       var clipped = [hard, snd].filter(function (b) {
         return b.scrollWidth > b.clientWidth + 1 || b.scrollHeight > b.clientHeight + 1;
       }).length;
+      var hasSvg = !!hard.querySelector('svg use') && !!snd.querySelector('svg use');
       chk.__hr = '左对齐差=' + leftDiff.toFixed(1) + 'px 上缝=' + topGap.toFixed(1) +
         ' 下缝=' + bottomGap.toFixed(1) + ' 按钮在HUD内=' + $('hud').contains(hard) + '/' + $('hud').contains(snd) +
         ' 尺寸=' + Math.round(hr.width) + 'x' + Math.round(hr.height) + ',' + Math.round(sr.width) + 'x' + Math.round(sr.height) +
-        ' 文字截断=' + clipped;
+        ' 图标=' + hasSvg + ' 文字截断=' + clipped;
+      /* 宽度只要求 ≥64（= 44px 触控下限 + 图标与内边距）；以前卡 70/100 是 emoji 时代的字宽，
+         那种阈值会把“换个图标就变窄”当成失败——真正要守的是“不截断 + 高≥44”。 */
       return $('hud').contains(hard) && $('hud').contains(snd) &&
-        hr.height >= 44 && hr.width >= 70 && sr.height >= 44 && sr.width >= 100 &&
-        clipped === 0 && leftDiff <= 1.5 && gapDiff <= 1.5;
+        hr.height >= 44 && hr.width >= 64 && sr.height >= 44 && sr.width >= 64 &&
+        hasSvg && clipped === 0 && leftDiff <= 1.5 && gapDiff <= 1.5;
     })(), chk.__hr);
 
     chk('点「⟳ 刷新」= 强制整页重拉（cache-busting 地址，用桩验证不真跳转）', (function () {
@@ -3228,17 +3521,19 @@
       return groupEls.length === ROUTE_KEYS.length && okOpen && okCount;
     })(), chk.__fold2);
 
-    chk('视口裁剪：放大到局部后大部分站名标签不参与排布（不被远处站拖慢/拖脏）', (function () {
+    chk('视口裁剪：放大到局部后绝大多数站名标签不参与显示（不被远处站拖慢/拖脏）', (function () {
       var bak = { k: view.k, tx: view.tx, ty: view.ty };
       zoomAt(0, 0, 1e6);
       clampView(); applyView(); updateLabelScale();
-      var total = labelEls.length, off = 0;
-      labelEls.forEach(function (L) { if (L.g.classList.contains('offscreen')) off++; });
-      var shown = labelBoxes.length;
+      var total = labelEls.length, off = 0, shown = 0;
+      labelEls.forEach(function (L) {
+        if (L.g.classList.contains('offscreen')) off++;
+        if (L.vis && L.inView && !L.g.classList.contains('offscreen')) shown++;
+      });
       view.k = bak.k; view.tx = bak.tx; view.ty = bak.ty;
       clampView(); applyView(); updateLabelScale();
-      chk.__cull = '放大到局部：站名标签共 ' + total + ' 个，屏幕外 ' + off + ' 个，参与排布 ' + shown + ' 个';
-      return total > 300 && off > total * 0.5 && shown < total * 0.5;
+      chk.__cull = '放大到局部：站名标签共 ' + total + ' 个，屏幕外 ' + off + ' 个，真正显示 ' + shown + ' 个';
+      return total > 300 && off > total * 0.5 && shown < 60;
     })(), chk.__cull);
 
     /* 底图覆盖：远端新线附近必须有水系与道路（否则就是“底图没扩到”的回归） */
@@ -3381,18 +3676,30 @@
         audio.on === false && b.getAttribute('aria-pressed') === 'false';
     })(), chk.__snd);
 
+    /* 声音按钮的“状态”现在由内联 SVG 图标 + 文案 + aria-pressed 三重表达（以前靠 emoji） */
+    function soundIconId() {
+      var u = $('btnSound') && $('btnSound').querySelector('use');
+      return u ? (u.getAttribute('href') || u.getAttribute('xlink:href') || '') : '';
+    }
+
     chk('声音开关可用：开能建音频上下文与合成 BGM/铃音通道，并能恢复', (function () {
       var hasAC = typeof (window.AudioContext || window.webkitAudioContext) === 'function';
       if (!hasAC) return true;                              // 环境不支持就跳过
       var bak = audio.on;
       setSound(true);
       var onText = $('btnSound').textContent;
+      var onIcon = soundIconId();
       setSound(false);
+      var offText = $('btnSound').textContent;
+      var offIcon = soundIconId();
       var ok = audio.on === false && !!audio.ctx && !!audio.bgmGain && !!audio.synth &&
-        /🔊/.test(onText) && /🔇/.test($('btnSound').textContent);
+        /声音开/.test(onText) && onIcon === '#ic-sound-on' &&
+        /声音关/.test(offText) && offIcon === '#ic-sound-off' &&
+        $('btnSound').getAttribute('aria-pressed') === 'false';
       setSound(bak);
       chk.__aud = 'ctx=' + !!audio.ctx + ' synth=' + !!audio.synth + ' bgmGain=' + !!audio.bgmGain +
-        ' 已恢复=' + (audio.on === bak) + ' 默认=' + bak;
+        ' 已恢复=' + (audio.on === bak) + ' 默认=' + bak +
+        ' 图标=' + onIcon + '→' + offIcon + ' 文案=' + onText.trim() + '→' + offText.trim();
       return ok && audio.on === bak;
     })(), chk.__aud);
 
@@ -3650,6 +3957,99 @@
                   document.documentElement.scrollHeight <= window.innerHeight + 1,
                   'scroll=' + document.documentElement.scrollWidth + 'x' + document.documentElement.scrollHeight +
                   ' viewport=' + window.innerWidth + 'x' + window.innerHeight);
+
+                /* ===== 新版控制区（tab + 抽屉）的契约 ===== */
+                chk('tab 一次只开一个面板：aria-selected 唯一、对应 pane 可见、其余 hidden', (function () {
+                  var names = ['lines', 'train', 'nav', 'stations'];
+                  var ok = true, seen = [];
+                  names.forEach(function (n) {
+                    setTab(n);
+                    var sel = document.querySelectorAll('#tabs .tab[aria-selected="true"]');
+                    var pane = $('tab-' + n);
+                    if (sel.length !== 1 || sel[0].id !== 'tabBtn-' + n) ok = false;
+                    if (pane.hidden) ok = false;
+                    names.forEach(function (m) { if (m !== n && !$('tab-' + m).hidden) ok = false; });
+                    seen.push(n);
+                  });
+                  setTab('train');
+                  chk.__tabs = seen.length + ' 个 tab 逐个切换正常；每个 tab 都对应一个 pane';
+                  return ok && seen.length === names.length;
+                })(), chk.__tabs);
+
+                chk('触控目标 ≥44px（tab / 线路色块 / 站点行 / HUD 按钮）', (function () {
+                  var bad = [];
+                  function need(sel, label) {
+                    Array.prototype.forEach.call(document.querySelectorAll(sel), function (el) {
+                      if (el.offsetParent === null) return;      // 当前隐藏的 pane 不量
+                      var r = el.getBoundingClientRect();
+                      if (r.width < 44 || r.height < 44) bad.push(label + ':' + Math.round(r.width) + 'x' + Math.round(r.height));
+                    });
+                  }
+                  need('#tabs .tab', 'tab');
+                  need('#hud .btn-mini', 'hudbtn');
+                  need('#stlist button.row-btn', 'strow');
+                  setTab('lines');
+                  var nChip = document.querySelectorAll('#lgLines .lg-chip').length;
+                  need('#lgLines .lg-chip', 'linechip');
+                  setTab('train');
+                  chk.__tap2 = bad.length ? bad.slice(0, 5).join(' ') : ('tab / ' + nChip + ' 个线路色块 / 站点行 / HUD 按钮全部 ≥44px');
+                  return bad.length === 0 && nChip === M.lines.length;
+                })(), chk.__tap2);
+
+                chk('面板主体是唯一滚动归属（document 与舞台都不滚）', (function () {
+                  var body = $('panelBody');
+                  setTab('stations');
+                  var docScrolled = window.scrollX !== 0 || window.scrollY !== 0 ||
+                    document.documentElement.scrollTop !== 0 || document.body.scrollTop !== 0;
+                  var bodyScrolls = body.scrollHeight > body.clientHeight;      // 366 站，必须可滚
+                  var oy = getComputedStyle(body).overflowY;
+                  var stageOverflow = getComputedStyle($('stage')).overflow;
+                  setTab('train');
+                  chk.__scroll = 'doc scrolled=' + docScrolled + ' panelBody ' + body.scrollHeight + '/' + body.clientHeight +
+                    ' overflowY=' + oy + ' stage overflow=' + stageOverflow;
+                  return !docScrolled && bodyScrolls && oy === 'auto' && stageOverflow === 'hidden';
+                })(), chk.__scroll);
+
+                chk('抽屉三档（peek/half/full）算得对，且收起时仍看得到把手与 tab', (function () {
+                  var g = sheetGeom();
+                  var hh = $('sheetHandle').offsetHeight, th = $('tabs').offsetHeight;
+                  var peek = g.peek;
+                  var out = [];
+                  var ok = peek > 0 && Math.abs(peek - (hh + th)) <= 1 &&
+                    g.peek <= g.half && g.half <= g.full && g.full <= g.panelH + 1;
+                  /* 直接验 --sheet-t / --sheet-h 的算法（不依赖当前 CSS 是否处于抽屉模式） */
+                  [['peek', g.peek], ['half', g.half], ['full', g.full]].forEach(function (pair) {
+                    var vis = Math.max(g.peek, Math.min(g.panelH, pair[1]));
+                    var t = g.panelH - vis;
+                    out.push(pair[0] + ': 可见 ' + Math.round(vis) + ' t=' + Math.round(t));
+                    if (t < -0.5 || t > g.panelH - g.peek + 0.5) ok = false;
+                    if (vis < g.peek - 0.5) ok = false;
+                  });
+                  chk.__sheet = out.join('  ') + '（面板高 ' + Math.round(g.panelH) + '，把手+tab=' + (hh + th) + '）';
+                  return ok;
+                })(), chk.__sheet);
+
+                chk('站点搜索：搜得到（中/英）、结果可点、清空后回到按线折叠', (function () {
+                  var inp = $('stSearch');
+                  if (!inp) return false;
+                  setTab('stations');
+                  inp.value = '天府广场';
+                  renderStationList();
+                  var hits = $('stlist').querySelectorAll('button[data-st]');
+                  var first = hits.length ? hits[0].getAttribute('data-st') : '';
+                  var okZh = hits.length === 1 && first === 'tianfuguangchang';
+                  inp.value = 'Tianfu Square';
+                  renderStationList();
+                  var okEn = $('stlist').querySelectorAll('button[data-st]').length >= 1;
+                  inp.value = '';
+                  renderStationList();
+                  var groups = $('stlist').querySelectorAll('.stgrp').length;
+                  var open = $('stlist').querySelectorAll('.stgrp.open').length;
+                  setTab('train');
+                  chk.__search = '中文命中=' + (okZh ? 1 : 0) + ' 英文命中=' + (okEn ? 1 : 0) +
+                    ' 清空后恢复 ' + groups + ' 组（展开 ' + open + '）';
+                  return okZh && okEn && groups === ROUTE_KEYS.length && open >= 1;
+                })(), chk.__search);
                 chk('折叠按钮可用（面板可收起）', (function () {
                   $('btnPanel').click();
                   var hidden = $('app').classList.contains('panel-hidden');
@@ -3765,6 +4165,7 @@
     stepTrain: stepTrain, setTarget: setTarget, reset: resetState,
     pointAt: pointAt, kmToMap: kmToMap, recomputeEta: recomputeEta,
     hitStation: hitStation, zoomAt: zoomAt, fitView: fitView, view: view,
+    applySnap: applySnap, setTab: setTab, renderStationList: renderStationList, sheet: sheet,
     stationKm: stationKm, stationMapS: stationMapS, panBox: panBox, contentBox: contentBox, stage: stage,
     openPopup: openPopup, closePopup: closePopup, etaFor: etaFor, refreshPopup: refreshPopup,
     get trains() { return trains; }, get activeIdx() { return activeIdx; }, setActive: setActive,

@@ -33,7 +33,7 @@ trap cleanup EXIT INT TERM
 
 W="${SIZE%x*}"; H="${SIZE#*x}"
 echo "== 无头自检: $URL  ($W x $H, budget=${BUDGET}ms)"
-timeout -k 5 180 "$EDGE" --headless=new --disable-gpu --no-first-run \
+timeout -k 5 180 "$EDGE" --headless=new --force-device-scale-factor=1 --disable-gpu --no-first-run \
   --disable-extensions --disable-sync --user-data-dir="$PROFILE_WIN" \
   --virtual-time-budget="$BUDGET" --window-size="$W,$H" \
   --dump-dom "$URL" > "$OUT" 2>/dev/null
@@ -43,7 +43,7 @@ echo "== Edge 退出码: $EDGE_EXIT（124=超时）"
 python3 - "$OUT" <<'PY'
 import re, json, html, sys, os
 s = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
-m2 = re.search(r'<pre id="selftest">(.*?)</pre>', s, re.S)
+m2 = re.search(r'<pre id="selftest"[^>]*>(.*?)</pre>', s, re.S)
 if not m2:
     m = re.search(r'<title>(.*?)</title>', s, re.S)
     print('NO SELFTEST:', (html.unescape(m.group(1))[:140] if m else '(无 title)'))
