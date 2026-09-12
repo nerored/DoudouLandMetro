@@ -31,8 +31,13 @@
       </g>
     </svg>
 
-    <!-- 左上角强刷：强制重新拉整个网页（带 cache-buster，并让脚本按版本号重新加载） -->
+    <!-- 顶部工具条：左：强制刷新；中：声音开关；右：☰ 控制（HUD 下移一行给它让位） -->
     <button id="btnHardRefresh" class="hard-refresh" type="button" title="强制重新拉取整个网页">⟳ 刷新</button>
+
+    <div class="sound-bar">
+      <button id="btnSound" class="btn" type="button" aria-pressed="false">🔇 声音关闭</button>
+      <span id="ttsNote" class="tts-note"></span>
+    </div>
 
     <div id="hud" class="hud">
       <div class="hud-brand" title="点击折叠/展开状态栏">豆豆国的地铁<span>成都地铁 1 · 2 号线示意</span><i class="hud-fold">⌄</i></div>
@@ -126,15 +131,6 @@
         </div>
         <div class="verline">
           <span class="muted" id="verText">版本读取中…</span>
-        </div>
-        <div class="row">
-          <button id="btnSound" class="btn btn-on" type="button" aria-pressed="true">🔊 声音开启</button>
-        </div>
-        <div class="verline">
-          <span class="muted">声音<strong>默认开</strong>：受浏览器自动播放限制，第一次触摸页面后才真正出声（解锁）；点按钮可静音。到站/开门/关门/发车会朗读并显示字幕。</span>
-        </div>
-        <div class="verline">
-          <span id="ttsNote" class="tts-note"></span>
         </div>
         <div class="row">
           <div class="seg" id="segSpeed" role="group" aria-label="速度倍率">

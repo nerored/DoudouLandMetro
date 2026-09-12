@@ -1850,7 +1850,7 @@
      * iOS/Safari 要求音频必须由用户手势开启：先默认为静音，用户点「声音」按钮后才启动。 */
   var audio = {
     ctx: null, master: null, bgmGain: null, synth: null, fileEl: null, useFile: false,
-    on: true,              // 默认声音开（受浏览器自动播放策略限制，第一次触摸页面后真正出声）
+    on: false,             // 默认关闭；用户点顶部中间的「🔇 声音关闭」开启（手势内解锁）
     vol: 0.6, announcements: 0, ttsOK: false, ttsSilent: false, ttsError: null, pendingAt: 0
   };
 
@@ -1966,7 +1966,8 @@
       if (ss.speaking || ss.pending) return;
       var u = new SpeechSynthesisUtterance(text);
       u.lang = 'zh-CN';
-      u.rate = 1.0;
+      /* 语音与倍速同步：1x=正常语速，2x/5x/10x 按倍率加速（钳到 0.5~5，再高引擎也会截断） */
+      u.rate = clamp(ui.mult, 0.5, 5);
       u.pitch = 1.0;
       var v = zhVoice();
       if (v) u.voice = v;
@@ -2022,7 +2023,7 @@
     var el = $('ttsNote');
     if (!el) return;
     if (!audio.on) { el.textContent = ''; el.className = 'tts-note'; return; }
-    if (audio.ttsOK) { el.textContent = '系统语音正常（到站/开门/关门/发车会朗读并显示字幕）'; el.className = 'tts-note ok'; return; }
+    if (audio.ttsOK) { el.textContent = '语音正常：到站/开门/关门/发车会朗读并显示字幕'; el.className = 'tts-note ok'; return; }
     if (audio.ttsSilent || audio.ttsError) {
       el.textContent = '系统语音不可用（iOS 主屏模式常见）：以提示音 + 字幕代替；用 Safari 打开同地址即有语音';
       el.className = 'tts-note warn';
@@ -2066,17 +2067,10 @@
     /* 字幕：不管能不能出声都显示报站内容（iOS 主屏 standalone 对 TTS 有限制时也有反馈） */
     showAnnounce(text);
     if (!audio.on) return;
-    if (kind === 'open' || kind === 'arrive') {
-      chime('open');
-      /* 倍速越高停站越短：5x/10x 只留提示音与字幕（否则语音会连成一片） */
-      if (ui.mult <= 2) speak(ui.mult === 1 ? text : ctxObj.zh + '站', true);
-    } else if (kind === 'closing') {
-      chime('warn');
-      if (ui.mult <= 2) speak(text, false);
-    } else {
-      chime('close');
-      if (ui.mult <= 2) speak(text, false);
-    }
+    /* 语音与倍速同步：任何倍速都朗读（rate 按倍率加速），只是正在说话时跳过下一条避免叠读 */
+    if (kind === 'open' || kind === 'arrive') { chime('open'); speak(text, true); }
+    else if (kind === 'closing') { chime('warn'); speak(text, false); }
+    else { chime('close'); speak(text, false); }
   }
 
   /* 报站字幕条（舞台下方居中；TTS 被限制时也能“看”到报站） */
@@ -2793,7 +2787,31 @@
       return here.length === 1 && !!b && b.classList.contains('here');
     })(), chk.__lst);
 
-    chk('速度选项 = 1x/2x/5x/10x，且高倍速下子步不丢步、语音不叠读', (function () {
+    chk('语音语速与倍速同步（1x=1、5x=5、上限 5）', (function () {
+      var desc = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
+      var saved = [], bakOn = audio.on, bakMult = ui.mult;
+      var stub = {
+        speaking: false, pending: false,
+        getVoices: function () { return []; },
+        cancel: function () { },
+        speak: function (u) { saved.push(u); }
+      };
+      try { Object.defineProperty(window, 'speechSynthesis', { value: stub, configurable: true, writable: true }); }
+      catch (e) { return true; }
+      setSound(true);
+      saved = [];
+      ui.mult = 1; announce(state, 'open');
+      ui.mult = 5; announce(state, 'open');
+      ui.mult = 10; announce(state, 'open');
+      var rates = saved.map(function (u) { return u.rate; });
+      ui.mult = bakMult; setSound(bakOn);
+      try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
+      chk.__rate = 'rate=' + rates.join(',');
+      return rates.length >= 3 && rates[0] === 1 && rates[1] === 5 && rates[2] === 5 &&
+        saved[1].text.indexOf('站到了') >= 0;
+    })(), chk.__rate);
+
+    chk('速度选项 = 1x/2x/5x/10x，且高倍速下子步不丢步', (function () {
       var btns = $('segSpeed').querySelectorAll('button');
       var mults = [].slice.call(btns).map(function (b) { return Number(b.getAttribute('data-mult')); });
       var want = [1, 2, 5, 10];
@@ -2835,13 +2853,17 @@
       return Math.abs(t - 10) < 0.12;
     })(), chk.__dwell);
 
-    chk('声音：默认开启（首次触摸页面解锁）+ 按钮在面板层、≥44px', (function () {
+    chk('声音：默认关闭 + 开关在顶部中间（HTML 层、≥44px、不遮 HUD）', (function () {
       var b = $('btnSound');
-      var r = b ? b.getBoundingClientRect() : { width: 0, height: 0 };
-      chk.__snd = 'text=' + (b ? b.textContent.trim() : '-') + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) +
-        ' on=' + audio.on + ' aria=' + (b ? b.getAttribute('aria-pressed') : '-');
-      return !!b && b.closest('#panel') !== null && r.height >= 44 && r.width >= 44 &&
-        audio.on === true && b.getAttribute('aria-pressed') === 'true';
+      if (!b) return false;
+      var r = b.getBoundingClientRect(), sb = $('stage').getBoundingClientRect();
+      var hud = $('hud').getBoundingClientRect();
+      var cx = (r.left + r.right) / 2 - sb.left;
+      var overlapped = !(r.right <= hud.left - 1 || r.left >= hud.right + 1 || r.bottom <= hud.top - 1 || r.top >= hud.bottom + 1);
+      chk.__snd = 'text=' + b.textContent.trim() + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) +
+        ' 居中偏差=' + Math.round(Math.abs(cx - stage.w / 2)) + ' 与HUD不重叠=' + !overlapped + ' on=' + audio.on;
+      return b.closest('#stage') !== null && r.height >= 44 && r.width >= 44 &&
+        Math.abs(cx - stage.w / 2) < 80 && (r.top - sb.top) < 110 && !overlapped && audio.on === false;
     })(), chk.__snd);
 
     chk('报站文案：天府广场站到了/列车开门注意安全/关门/豆豆国地铁X号线+下一站', (function () {
@@ -2896,18 +2918,18 @@
       return bad.length === 0;
     })(), chk.__ov);
 
-    chk('声音开关可用：关→开能建音频上下文与合成 BGM/铃音通道，并能恢复', (function () {
+    chk('声音开关可用：开能建音频上下文与合成 BGM/铃音通道，并能恢复', (function () {
       var hasAC = typeof (window.AudioContext || window.webkitAudioContext) === 'function';
       if (!hasAC) return true;                              // 环境不支持就跳过
       var bak = audio.on;
-      setSound(false);
-      var offText = $('btnSound').textContent;
       setSound(true);
-      var ok = audio.on === true && !!audio.ctx && !!audio.bgmGain && !!audio.synth &&
-        /开启/.test($('btnSound').textContent) && /关闭/.test(offText);
+      var onText = $('btnSound').textContent;
+      setSound(false);
+      var ok = audio.on === false && !!audio.ctx && !!audio.bgmGain && !!audio.synth &&
+        /开启/.test(onText) && /关闭/.test($('btnSound').textContent);
       setSound(bak);
       chk.__aud = 'ctx=' + !!audio.ctx + ' synth=' + !!audio.synth + ' bgmGain=' + !!audio.bgmGain +
-        ' 已恢复=' + (audio.on === bak);
+        ' 已恢复=' + (audio.on === bak) + ' 默认=' + bak;
       return ok && audio.on === bak;
     })(), chk.__aud);
 

@@ -280,10 +280,41 @@ body {
 .hard-refresh:active { background: #e6f0f9; }
 .hard-refresh.busy { color: #8a5a08; border-color: #e8cf9a; background: #fdf6e3; }
 
+/* 顶部中间的“声音开关”（左上角是刷新、右上角是 ☰ 控制） */
+.sound-bar {
+  position: absolute;
+  z-index: 32;
+  top: calc(8px + var(--sa-t));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: min(430px, calc(100% - 230px));
+  pointer-events: none;
+}
+.sound-bar .btn {
+  pointer-events: auto;
+  min-width: 132px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: var(--shadow);
+}
+.sound-bar .tts-note {
+  margin-top: 0;
+  padding: 3px 9px;
+  text-align: center;
+  background: rgba(255, 255, 255, .9);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  max-width: 100%;
+}
+.sound-bar .tts-note:empty { display: none; }
+
 .hud {
   position: absolute;
-  top: calc(8px + var(--sa-t));
-  left: calc(80px + var(--sa-l));   /* 给左上角的“⟳ 刷新”腾位置 */
+  top: calc(60px + var(--sa-t));      /* 顶部一行留给工具条（刷新/声音/控制） */
+  left: calc(80px + var(--sa-l));     /* 再给左上角“⟳ 刷新”腾位置 */
   padding: 8px 10px;
   border-radius: var(--r);
   background: rgba(255, 255, 255, .90);
