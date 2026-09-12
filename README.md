@@ -199,18 +199,24 @@ iPad 把它「添加到主屏」后是 standalone 窗口：**没有地址栏、�
 1. **可见版本戳**：页面加载时用 `fetch('version.json', { cache: 'no-store' })` 现取版本，
    显示在两处——舞台右上角小徽标（如 `v2026-09-12.2210`）与控制面板「列车控制」卡片里的版本行
    （如 `v2026-09-12.2210 · 5f66230`）。旧版页面看徽标就能一眼分辨。
-2. **「⟳ 检查更新」按钮**：在右侧面板「暂停 / 复位」下面（HTML 面板层、不在地图手势层，触摸目标 256×44 px）。
-   点击行为：拉一次 `version.json?_v=<时间戳>`（`cache:'no-store'`）与服务端版本比对——
-   * 版本不同 → **带 `_v=` 的 cache-busting 地址 + `location.replace()` 强制重载**（不是 `location.reload()`），
-     因此会重新拉 `index.html / app.js / style.css / data.js`；
-   * 版本相同 → 提示「已是最新（再点一下强制刷新）」，**4 秒内再点一次**则忽略比对直接 cache-busting 重载；
-   * 角落版本徽标也可点，行为与按钮完全一致。
-   刷新 URL 由 `refreshUrlFor(href, stamp)` 构造：**保留原有查询参数（如 `?selftest=1`）与 hash，仅覆盖 `_v`**，
-   并使用当前 `pathname`（在 Pages 子路径 `/chengdu-metro-line1/` 下也正确）。
+2. **「⟳ 刷新」按钮（舞台左上角、HUD 左边、始终可见）**：不看版本、直接**强制整页重拉** ——
+   带 `_v=<时间戳>` 的地址 + `location.replace()`，同时因为资源是**按版本号加载**的
+   （`index.html` 里的内联 bootstrap 先 `fetch('version.json?_v=…', {cache:'no-store'})` 拿版本，
+   再注入 `./style.css?v=<版本>`、`./data.js?v=<版本>`、`./app.js?v=<版本>`）——
+   所以 GitHub Pages 的 `max-age=600` 缓存拦不住，点一下一定能拿到新代码。
+   （静态的 `<link rel=stylesheet>` 保留着，先渲染不闪；版本号加载的那份后到生效。）
+3. **「⟳ 检查更新」按钮**（右侧面板「列车控制」里）+ **右上角版本徽标**；
+   逻辑：拉一次 `version.json?_v=<时间戳>`（`cache:'no-store'`）与服务端版本比对——
+   * 版本不同 → **带 `_v=` 的 cache-busting 地址 + `location.replace()` 强制重载**；
+   * 版本相同 → 提示「已是最新（再点一下强制刷新）」，**4 秒内再点一次**则忽略比对、直接强制重载；
+   * 拉不到版本（离线 / `file://`）→ 只提示失败，**绝不自动重载**（否则会无限刷新）。
 
-**发版流程**（让版本戳记录到正确的 commit）：改代码 → `git commit` → `./tools/bump-version.sh` →
-`git add version.json && git commit` → `git push`。`bump-version.sh` 里的 `commit` 取“生成时刻的 HEAD”，
-也就是上一步的代码提交（因为版本戳要在下一次提交里落库）。
+刷新 URL 由 `refreshUrlFor(href, stamp)` 构造：**保留原有查询参数（如 `?selftest=1`）与 hash，仅覆盖 `_v`**，
+并使用当前 `pathname`（在 Pages 子路径 `/chengdu-metro-line1/` 下也正确）。
+
+**发版流程**（让版本戳与资源 URL 都更新）：改代码 → `git commit` → `./tools/bump-version.sh` →
+`git add version.json && git commit` → `git push`。改 `bump-version.sh` 里的 `commit` 取“生成时刻的 HEAD”，
+也就是上一步的代码提交；**版本号变了，`?v=` 就会变，iPad 上点「⟳ 刷新」即必定拿到新代码**。
 
 ## 6. 底图与几何数据来源
 
@@ -425,6 +431,22 @@ msedge.exe --headless=new --virtual-time-budget=9000 --window-size=1180,820 \
 
 ## 10. 更新记录
 
+* 2026-09-12 · **修 4 个实测 bug（含两个会导致不可用的问题）**：
+  1. **点站点派车后页面卡死** —— 到站气泡/列车标签的"重叠避让"是重整扫描的写法，
+     当气泡被舞台边缘钉住时会**死循环**；现在每次放置最多尝试 24 次。
+  2. **点站点/列车后站点列表不跟随** —— 把 updateStationList() 放进 HUD 节拍（每 0.12s 同步），
+     并把当前站 scrollIntoView；切车/派车时也会同步。
+  3. **开关门没有语音报站** —— 真列车被标了 silent: true（本意只是"仿真副本不弹 toast"），
+     而 announce() 也用它来跳过 —— 结果真车永远不报站；现在 silent 只用于副本，
+     并新增**报站字幕条**（#announce），即使 iOS 主屏 standalone 限制了 TTS 也能看到报站内容。
+  4. **跨线路派车把列车瞬移到另一条线** —— 现在不再移动当前列车：跨线路目标**交给跑那条线的那列车**
+     （自动切换控制对象），同线路目标只交给 planNext 在四河自然换交路，**位置一律不变**；
+     switchService 也不再"从起点站发车"，最多退到分叉站。
+  另修一个隐藏的逻辑 bug：fetchVersion 会把"已加载版本"覆盖掉，导致「⟳ 检查更新」**永远判定为已是最新**
+  （真·检测不到更新）；现在把"加载时版本 / 服务端版本"分开存放，并加"60 秒内最多自动重载 3 次"的防跑飞保护。
+  自检 68 → 76 项（新增：派车不重置位置×2、报站三时机字幕+计数、定位有界性、站点列表跟随、刷新按钮与资源按版本号加载），
+  并新增 tools/headless-selftest.sh（跑完自动关掉无头浏览器、清理临时 profile）。
+
 * 2026-09-12 · 修 iPad 两个问题：（1）站点可点击 → 轻点弹出悬浮窗（到达时间/列车状态/派车），
   并修掉「点不中」的根因：`viewBox` 与舞台尺寸脱同步（新增 ResizeObserver + visualViewport 监听 +
   坐标比例换算；去掉等双击的 240 ms 延迟、命中半径 26→30 px、新增 `click` 兜底）；
@@ -442,6 +464,11 @@ msedge.exe --headless=new --virtual-time-budget=9000 --window-size=1180,820 \
   符合 iOS 自动播放策略）；BGM 用 Web Audio 实时合成的地铁环境声（可选 `audio/bgm.mp3` 覆盖）；
   开门/关门/关门警报用合成双音铃；报站用 `speechSynthesis`（zh-CN）在到站/关门/发车三个时机播报；
   同时把**停站时间延长到 10 秒**（开门 1.2 + 上下客 7.0 + 关门 1.2 + 待发 0.6）。自检项 62 → 68。
+* 2026-09-12 · **左上角「⟳ 刷新」强刷按钮 + 资源按版本号加载**：iPad 主屏 standalone 没地址栏，
+  且右侧面板可能被折起来/要滚动才看得到，因此把强刷按钮放到**舞台左上角（HUD 左边）始终可见**；
+  同时 `index.html` 改成内联 bootstrap：先 `fetch('version.json', {cache:'no-store'})` 拿版本，
+  再以 `?v=<版本>` 注入 `style.css/data.js/app.js` —— 这样点强刷必定拿到新代码，不再被 Pages 的
+  `max-age=600` 拦住。自检新增 3 项（按钮位置/尺寸/与 HUD 不重叠、强刷 URL 带 `_v=` 且保留原参数、脚本按版本号加载）。
 * 2026-09-12 · **多列车 + 下一站强调/到站气泡**：每条线路一列（共 2 列）且**打开即全部自动运行**；
   轻点地图上的列车（或面板「列车」卡片）即可切换当前控制列车，面板/线路交路/HUD/跟随/导航随之更新，
   当前车有加粗描边与车头虚线选中环；每列车下一站有脉冲强调圈与「线路 + 还差 X 分 Y 秒」气泡，

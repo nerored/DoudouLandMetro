@@ -257,10 +257,33 @@ body {
 .switch span { flex: 1; }
 
 /* ---------------------------------------------------------------- HUD */
+/* 左上角强制刷新按钮（HTML 覆盖层，不在地图手势层；HUD 给它让出左侧一格） */
+.hard-refresh {
+  position: absolute;
+  z-index: 32;
+  left: calc(8px + var(--sa-l));
+  top: calc(8px + var(--sa-t));
+  min-width: 64px;
+  min-height: var(--tap);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--line-dark);
+  background: rgba(255, 255, 255, .94);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.hard-refresh:active { background: #e6f0f9; }
+.hard-refresh.busy { color: #8a5a08; border-color: #e8cf9a; background: #fdf6e3; }
+
 .hud {
   position: absolute;
   top: calc(8px + var(--sa-t));
-  left: calc(8px + var(--sa-l));
+  left: calc(80px + var(--sa-l));   /* 给左上角的“⟳ 刷新”腾位置 */
   padding: 8px 10px;
   border-radius: var(--r);
   background: rgba(255, 255, 255, .90);
@@ -464,6 +487,28 @@ body {
 .stpop-row b { font-weight: 600; text-align: right; }
 .stpop .btn-block { margin-top: 10px; }
 .stpop .btn[disabled] { opacity: .5; }
+
+/* 报站字幕条（TTS 被系统限制时也能看到报站内容） */
+.announce {
+  position: absolute;
+  left: 50%;
+  bottom: calc(56px + var(--sa-b));
+  transform: translate(-50%, 14px);
+  z-index: 34;
+  max-width: calc(100% - 28px);
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(34, 48, 61, .93);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transition: opacity .22s ease, transform .22s ease;
+  pointer-events: none;
+  text-align: center;
+}
+.announce.show { opacity: 1; transform: translate(-50%, 0); }
 
 .toast {
   position: absolute;

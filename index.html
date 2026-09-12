@@ -31,6 +31,9 @@
       </g>
     </svg>
 
+    <!-- 左上角强刷：强制重新拉整个网页（带 cache-buster，并让脚本按版本号重新加载） -->
+    <button id="btnHardRefresh" class="hard-refresh" type="button" title="强制重新拉取整个网页">⟳ 刷新</button>
+
     <div id="hud" class="hud">
       <div class="hud-brand" title="点击折叠/展开状态栏">豆豆国的地铁<span>成都地铁 1 · 2 号线示意</span><i class="hud-fold">⌄</i></div>
       <div class="hud-row">
@@ -172,7 +175,32 @@
   </aside>
 </div>
 
-<script src="./data.js"></script>
-<script src="./app.js"></script>
+<script>
+/* 资源按版本号加载：先取 version.json（no-store）拿到版本，再把 data.js / app.js 以 ?v=<版本> 注入。
+   这样每次发版后资源 URL 会变，浏览器的 HTTP 缓存（GitHub Pages 的 max-age=600）拦不住，
+   “⟳ 刷新”才能真正拿到新代码。取不到版本（file:// 等）时就直接按原路径加载，功能不受影响。 */
+(function () {
+  function load(v) {
+    var q = v ? '?v=' + encodeURIComponent(v) : '';
+    /* 静态 link 先渲染、不闪；这里再按版本号加载一份（同源、后加载生效），确保样式也不会被缓存拖住 */
+    var l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = './style.css' + q;
+    document.head.appendChild(l);
+    ['data.js', 'app.js'].forEach(function (f) {
+      var s = document.createElement('script');
+      s.async = false;               // 保持先后顺序：先 data.js 再 app.js
+      s.src = './' + f + q;
+      document.body.appendChild(s);
+    });
+  }
+  try {
+    fetch('version.json?_v=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { load(j && j.version ? j.version : ''); })
+      .catch(function () { load(''); });
+  } catch (e) { load(''); }
+})();
+</script>
 </body>
 </html>

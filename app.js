@@ -69,7 +69,8 @@
       doorPhase: 'opening', door: 0,
       curId: r.ids[0], nextIdx: 1,
       target: null, odometer: 0, eta: null, etaStops: 0,
-      lastTargetToast: null, silent: true,
+      lastTargetToast: null,
+      silent: false,                                     // 只有仿真副本才是 silent（它同时用于“不弹 toast”和“不报站”）
       aOpened: true, aClosing: true, aDepart: true      // 始发站不报站
     };
   }
@@ -113,6 +114,7 @@
     tr.target = tgt;
     tr.eta = null; tr.etaStops = 0;
     tr.lastTargetToast = null;
+    tr.silent = false;
     tr.aOpened = true; tr.aClosing = true; tr.aDepart = true;   // 起点站不报站
   }
 
@@ -800,10 +802,13 @@
       x = clamp(x, 6, Math.max(6, stage.w - w - 6));
       y = clamp(y, 6, Math.max(6, stage.h - h - 6));
       if (placed) {
-        for (var k = 0; k < placed.length; k++) {
+        /* 注意：必须限定尝试次数 —— 如果气泡被舞台边缘钉住，“重新扫描”会变成死循环把页面卡死 */
+        var guard = 0;
+        for (var k = 0; k < placed.length && guard < 24; k++) {
           var q = placed[k];
           if (x < q.x + q.w + 4 && x + w + 4 > q.x && y < q.y + q.h + 4 && y + h + 4 > q.y) {
             y = clamp(q.y - h - 5, 6, Math.max(6, stage.h - h - 6));
+            guard++;
             k = -1;
           }
         }
@@ -927,9 +932,15 @@
   /* 气泡定位：列车标签先占位，气泡避开它们、HUD 与彼此，始终留在舞台内 */
   function positionBubbles() {
     var hudBox = $('hud') ? $('hud').getBoundingClientRect() : null;
+    var hardBox = $('btnHardRefresh') ? $('btnHardRefresh').getBoundingClientRect() : null;
     var stageBox = $('stage').getBoundingClientRect();
     var placed = [];
     placeTrainPills(placed);
+    function hits(box, x, y, w, h) {
+      if (!box) return false;
+      return !(x + w < box.left - stageBox.left || x > box.right - stageBox.left ||
+        y + h < box.top - stageBox.top || y > box.bottom - stageBox.top);
+    }
     Object.keys(bubbleWraps).forEach(function (sid) {
       var st = M.byId[sid], wrap = bubbleWraps[sid];
       if (!st || !wrap) return;
@@ -938,23 +949,24 @@
       var cy = st.y * view.k + view.ty;
       var x = clamp(cx - w / 2, 6, Math.max(6, stage.w - w - 6));
       var y = cy - (10 * Math.max(0.7, Math.min(1.6, view.k)) + 14) - h;
-      /* 太靠近顶边或会被 HUD 盖住时，改放到站点下方 */
-      var inHud = hudBox && !(x + w < hudBox.left - stageBox.left || x > hudBox.right - stageBox.left ||
-        y + h < hudBox.top - stageBox.top || y > hudBox.bottom - stageBox.top);
+      /* 太靠近顶边或会被 HUD / 左上角刷新按钮盖住时，改放到站点下方 */
+      var inHud = hits(hudBox, x, y, w, h) || hits(hardBox, x, y, w, h);
       if (y < 6 || inHud) {
         var y2 = cy + 14;
-        if (!hudBox || !(x + w < hudBox.left - stageBox.left || x > hudBox.right - stageBox.left ||
-          y2 + h < hudBox.top - stageBox.top || y2 > hudBox.bottom - stageBox.top)) {
-          y2 = (hudBox ? hudBox.bottom - stageBox.top : 0) + 6;
+        if (hits(hudBox, x, y2, w, h) || hits(hardBox, x, y2, w, h)) {
+          var below = Math.max(hudBox ? hudBox.bottom - stageBox.top : 0, hardBox ? hardBox.bottom - stageBox.top : 0);
+          y2 = below + 6;
         }
         y = y2;
       }
       y = clamp(y, 6, Math.max(6, stage.h - h - 6));
-      /* 与已放置气泡避免重叠 */
-      for (var k = 0; k < placed.length; k++) {
+      /* 与已放置气泡避免重叠（限定尝试次数，否则“重启扫描”可能死循环） */
+      var guard = 0;
+      for (var k = 0; k < placed.length && guard < 24; k++) {
         var q = placed[k];
         if (x < q.x + q.w + 4 && x + w + 4 > q.x && y < q.y + q.h + 4 && y + h + 4 > q.y) {
           y = clamp(q.y + q.h + 5, 6, Math.max(6, stage.h - h - 6));
+          guard++;
           k = -1;
         }
       }
@@ -980,6 +992,9 @@
     if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
     updateHud();
     updateStationList();
+    scrollListToActive();
+    updateTrainChips();
+    updateStationList();
     updateTrainChips();
     toast('当前控制：' + LINE_BY_KEY[ROUTES[state.routeKey].lineKey].short +
       '列车（' + M.byId[state.curId].zh + '站附近）');
@@ -991,19 +1006,27 @@
   function terminusId() { return ROUTES[state.routeKey].terminus; }
   function lineOf(routeKey) { return LINE_BY_KEY[ROUTES[routeKey].lineKey]; }
 
-  /* 切换交路（线路选择器 / 跨线路派车前调用）：列车若不在新交路上则从起点站发车 */
+  /* 切换交路（不重置列车位置：旧位置仍在新交路上就保位置，否则退到分叉站） */
   function switchService(key, quiet) {
     if (!ROUTES[key] || key === state.routeKey) return false;
     var r = ROUTES[key];
     var i = r.ids.indexOf(state.curId);
-    var reset = false;
+    var moved = false;
     state.routeKey = key;
     if (i < 0) {
-      state.curId = r.ids[0];
-      state.posKm = r.kmAt[0];
+      /* 当前站不在新交路上（如支线深段）：退到分叉站，而不是凭空移到起点站 */
+      var jn = LINE_SWITCH[r.lineKey];
+      if (jn && r.ids.indexOf(jn) >= 0) {
+        i = r.ids.indexOf(jn);
+        state.curId = jn;
+      } else {
+        i = 0;
+        state.curId = r.ids[0];
+      }
+      state.posKm = r.kmAt[i];
       state.dir = 1;
-      state.nextIdx = 1;
-      reset = true;
+      state.nextIdx = clamp(i + 1, 0, r.ids.length - 1);
+      moved = true;
     } else {
       state.posKm = r.kmAt[i];
       state.nextIdx = clamp(i + state.dir, 0, r.ids.length - 1);
@@ -1014,14 +1037,21 @@
     state.doorPhase = 'closed';
     state.v = 0;
     state.aOpened = true; state.aClosing = true; state.aDepart = true;   // 切交路不报站
-    state.odometer = 0;
-    world.style.setProperty('--line', r.color);
+    if (world) world.style.setProperty('--line', r.color);
     if (!quiet) {
       toast('交路切换为 ' + r.label + '（' + lineOf(key).short + '）' +
-        (reset ? '，列车从' + M.byId[state.curId].zh + '站发车' : ''));
+        (moved ? '，列车退至' + M.byId[state.curId].zh + '站' : ''));
     }
     recomputeEta();
     return true;
+  }
+
+  /* 找到跑某条线路的那列车（没有则返回 -1） */
+  function trainIndexForLine(lineKey) {
+    for (var i = 0; i < trains.length; i++) {
+      if (ROUTES[trains[i].routeKey].lineKey === lineKey) return i;
+    }
+    return -1;
   }
 
   function resetState(keepTarget) {
@@ -1231,8 +1261,20 @@
       return;
     }
     var want = serviceForStation(id, state.routeKey);
-    var switchedLine = false;
-    if (want && want !== state.routeKey) switchedLine = switchService(want, true);
+    if (!want) { toast('该站不在任何交路上'); return; }
+
+    /* 跨线路：不把当前列车瞬移过去，而是把目标交给跑那条线的那列车 */
+    if (ROUTES[want].lineKey !== ROUTES[state.routeKey].lineKey) {
+      var ti = trainIndexForLine(ROUTES[want].lineKey);
+      if (ti < 0) { toast('没有跑 ' + LINE_BY_KEY[ROUTES[want].lineKey].short + ' 的列车'); return; }
+      if (ti !== activeIdx) {
+        setActive(ti);
+        activateSideEffects();
+      }
+      /* 同线路内换交路（主线↔支线）：只换交路，不动位置 */
+      if (ROUTES[state.routeKey].ids.indexOf(id) < 0) switchService(want, true);
+    }
+    /* 同线路的目标不调 switchService：交给 planNext 在分叉站自然切换交路（位置不变） */
     state.target = id;
     selected = id;
     recomputeEta();
@@ -1241,13 +1283,13 @@
     else {
       var e = etaFor(id);
       var behind = !!(e && (e.reversed || e.switched));
-      msg = (switchedLine ? '已切到 ' + lineOf(state.routeKey).short + '，' : '') +
-        '导航至 ' + st.zh + ' 站' + (behind ? '（需先折返/换交路）' : '') + '，预计 ' +
-        (e && e.ok ? fmtDur(e.seconds) : '较长');
+      msg = LINE_BY_KEY[ROUTES[state.routeKey].lineKey].short + '列车 → ' + st.zh + ' 站' +
+        (behind ? '（需先折返/换交路）' : '') + '，预计 ' + (e && e.ok ? fmtDur(e.seconds) : '较长');
     }
     toast(msg);
     refreshPopup();
     updateStationList();
+    scrollListToActive();
   }
 
   /* ==================================================== 6. 视图（Pointer Events） */
@@ -1601,6 +1643,20 @@
     }
   }
 
+  /* 站点列表跟随当前列车：把当前站滚进可视区 */
+  var lastScrolledKey = null;
+  function scrollListToActive() {
+    var box = $('stlist');
+    if (!box) return;
+    var key = activeIdx + '|' + state.curId;
+    if (key === lastScrolledKey) return;
+    lastScrolledKey = key;
+    var b = box.querySelector('[data-st="' + state.curId + '"]');
+    if (!b || !b.scrollIntoView) return;
+    try { b.scrollIntoView({ block: 'nearest' }); }
+    catch (e) { try { b.scrollIntoView(false); } catch (e2) { void e2; } }
+  }
+
   /* ============================================ 版本戳与「检查更新 / 刷新」
      背景：iPad「添加到主屏」后在 standalone 模式下没有地址栏、没有刷新按钮，
      而且 GitHub Pages 的 HTML/JS 带 cache-control: max-age=600，关掉重开也可能还是旧版。
@@ -1608,7 +1664,8 @@
              ② 「⟳ 检查更新」按钮：拉一次服务器版本比对，不同→带 _v= 新版号 location.replace 强刷；
                 相同→提示已是最新，4 秒内再点一下则强制 cache-busting 重载。
      version.json 由 tools/bump-version.sh 生成（发版流程见 README）。 */
-  var BUILD_VERSION = null;      // version.json 内容
+  var BUILD_VERSION = null;      // 页面“加载时”的版本（一旦确定不再被后续检查覆盖）
+  var REMOTE_VERSION = null;     // 最近一次从服务器拉到的版本（用于比对）
   var forceNextRefresh = false;  // 已是最新后再点一下 = 强制刷新
   var refreshBusy = false;
 
@@ -1637,22 +1694,59 @@
     }
   }
 
-  function fetchVersion(bust) {
+  function fetchVersion(bust, asLoaded) {
     var url = 'version.json' + (bust ? '?_v=' + Date.now() : '');
     return fetch(url, { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
-        if (j && j.version) { renderVersion(j); return j; }
-        renderVersion(null);
-        return null;
+        if (j && j.version) {
+          REMOTE_VERSION = j;
+          if (asLoaded || !BUILD_VERSION) {        // 首次：这就是“加载时的版本”
+            BUILD_VERSION = j;
+            renderVersion(j);
+          }
+        } else if (asLoaded || !BUILD_VERSION) {
+          renderVersion(null);
+        }
+        return j;
       })
-      .catch(function () { renderVersion(null); return null; });
+      .catch(function () {
+        if (asLoaded || !BUILD_VERSION) renderVersion(null);
+        return null;
+      });
   }
 
-  function reloadFresh(label) {
+  /* 真正跳转只在这里发生（单独抽出来，便于自检用桩验证） */
+  var navigateTo = function (url) { location.replace(url); };
+  var lastReloadUrl = null;      // 最近一次准备重载的地址（自检断言用）
+
+  /* 防跑飞：60 秒内自动重载超过 3 次就不再自动跳（避免某些异常变成无限刷新把 standalone 应用卡死） */
+  function reloadBudgetLeft() {
+    try {
+      var now = Date.now();
+      var arr = JSON.parse(sessionStorage.getItem('metro_reloads') || '[]');
+      arr = arr.filter(function (t) { return now - t < 60000; });
+      if (arr.length >= 3) return false;
+      arr.push(now);
+      sessionStorage.setItem('metro_reloads', JSON.stringify(arr));
+    } catch (e) { void e; }
+    return true;
+  }
+
+  function reloadFresh(label, nav) {
     setVerText(label || '正在更新…', '', 'busy');
     var url = refreshUrlFor(location.href);
-    setTimeout(function () { location.replace(url); }, 250);
+    lastReloadUrl = url;
+    if (!reloadBudgetLeft()) {
+      setVerText('刷新过于频繁', '已暂停自动刷新，请稍后手动点「⟳ 刷新」', '');
+      return;
+    }
+    setTimeout(function () { (nav || navigateTo)(url); }, 250);
+  }
+
+  /* 自检用：重置“防跑飞”计数 */
+  function resetReloadBudget() {
+    try { sessionStorage.removeItem('metro_reloads'); } catch (e) { void e; }
   }
 
   function checkUpdate(force) {
@@ -1662,10 +1756,11 @@
     setVerText('正在检查…', '', 'busy');
     fetchVersion(true).then(function (remote) {
       refreshBusy = false;
-      var cur = BUILD_VERSION && BUILD_VERSION.version;
+      var loaded = BUILD_VERSION && BUILD_VERSION.version;
+      var remoteV = (REMOTE_VERSION && REMOTE_VERSION.version) || (remote && remote.version) || null;
       /* 拉不到版本（离线 / file:// / 网络失败）不能直接重载，否则会无限刷新；
          此时只提示失败，并在 4 秒内允许再点一下强制刷新。 */
-      if (!remote || !remote.version) {
+      if (!remoteV) {
         setVerText('v未知', '检查失败（再点一下强制刷新）', '');
         forceNextRefresh = true;
         setTimeout(function () {
@@ -1675,11 +1770,11 @@
         }, 4000);
         return;
       }
-      if (!cur || remote.version !== cur) {
-        reloadFresh('发现新版本 ' + remote.version + '，正在更新…');
+      if (!loaded || remoteV !== loaded) {
+        reloadFresh('发现新版本 ' + remoteV + '，正在更新…');
         return;
       }
-      setVerText('v' + cur, '已是最新（再点一下强制刷新）', 'fresh');
+      setVerText('v' + loaded, '已是最新（再点一下强制刷新）', 'fresh');
       forceNextRefresh = true;
       setTimeout(function () {
         if (!forceNextRefresh) return;
@@ -1689,8 +1784,17 @@
     });
   }
 
+  /* 强制刷新：不看版本、直接用 cache-busting 地址整页重拉（资源还会按版本号换 URL）
+     nav 参数只为自检打桩预留（传入则用它代替 location.replace，不会真的跳转）。 */
+  function hardReload(nav) {
+    var b = $('btnHardRefresh');
+    if (b) { b.textContent = '⟳ 刷新中…'; b.classList.add('busy'); }
+    if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
+    reloadFresh('正在强制刷新…', nav);
+  }
+
   function bindVersionUI() {
-    var btn = $('btnRefresh'), badge = $('verBadge');
+    var btn = $('btnRefresh'), badge = $('verBadge'), hard = $('btnHardRefresh');
     function onTap(e) {
       e.preventDefault();
       e.stopPropagation();
@@ -1699,7 +1803,8 @@
     }
     if (btn) btn.addEventListener('click', onTap);
     if (badge) badge.addEventListener('click', onTap);
-    fetchVersion(false);
+    if (hard) hard.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); hardReload(); });
+    fetchVersion(false, true);      // 首次拉取：决定“加载时的版本”
   }
 
   /* ==================================================== 面板：列车选择 */
@@ -1891,7 +1996,7 @@
   }
 
   function announce(st, kind) {
-    if (!isActive(st) || st.silent || !audio.on) return;
+    if (!isActive(st) || st.silent) return;
     var r = ROUTES[st.routeKey];
     var after = nextStopAfter(st);
     var ctxObj = {
@@ -1899,17 +2004,31 @@
       next: after && M.byId[after] ? M.byId[after].zh : '',
       line: LINE_BY_KEY[r.lineKey].key
     };
-    if (kind === 'arrive') {
-      chime('open');
-      speak(ui.mult >= 2 ? ctxObj.zh + '站' : announceText('arrive', ctxObj), true);
-    } else if (kind === 'closing') {
-      chime('warn');
-      speak(announceText('closing', ctxObj), false);
-    } else if (kind === 'depart') {
-      chime('close');
-      speak(after ? announceText('depart', ctxObj)
-        : '欢迎乘坐成都地铁' + ctxObj.line + '，本次列车已到达终点站', false);
+    var text = kind === 'arrive' ? announceText('arrive', ctxObj)
+      : kind === 'closing' ? announceText('closing', ctxObj)
+        : (after ? announceText('depart', ctxObj) : '欢迎乘坐成都地铁' + ctxObj.line + '，本次列车已到达终点站');
+    /* 字幕：不管能不能出声都显示报站内容（iOS 主屏 standalone 对 TTS 有限制时也有反馈） */
+    showAnnounce(text);
+    if (!audio.on) return;
+    if (kind === 'arrive') { chime('open'); speak(ui.mult >= 2 ? ctxObj.zh + '站' : text, true); }
+    else if (kind === 'closing') { chime('warn'); speak(text, false); }
+    else { chime('close'); speak(text, false); }
+  }
+
+  /* 报站字幕条（舞台下方居中；TTS 被限制时也能“看”到报站） */
+  var aBox = null, aTimer = null;
+  function showAnnounce(text) {
+    if (!text) return;
+    if (!aBox) {
+      aBox = document.createElement('div');
+      aBox.id = 'announce';
+      aBox.className = 'announce';
+      $('stage').appendChild(aBox);
     }
+    aBox.textContent = text;
+    aBox.classList.add('show');
+    if (aTimer) clearTimeout(aTimer);
+    aTimer = setTimeout(function () { aBox.classList.remove('show'); }, 6000);
   }
 
   function setSound(on) {
@@ -2034,7 +2153,7 @@
       go.textContent = '已定为目标站（点击取消）';
       go.disabled = false;
     } else if (e && e.crossLine) {
-      go.textContent = '切换到' + LINE_BY_KEY[ROUTES[e.wantKey].lineKey].short + '并运行到该站';
+      go.textContent = '让' + LINE_BY_KEY[ROUTES[e.wantKey].lineKey].short + '列车运行到该站';
       go.disabled = false;
     } else {
       go.textContent = '列车运行到该站';
@@ -2105,7 +2224,15 @@
       }
       followStep(dtRaw);
       hudAcc += dtRaw;
-      if (hudAcc > 0.12) { hudAcc = 0; updateHud(); refreshPopup(); positionPopup(); updateTrainChips(); }
+      if (hudAcc > 0.12) {
+        hudAcc = 0;
+        updateHud();
+        refreshPopup();
+        positionPopup();
+        updateTrainChips();
+        updateStationList();        // 站点列表的“当前站/目标站”跟着列车走
+        scrollListToActive();
+      }
     }
     /* 自检模式用 20Hz 定时器（而不是 rAF）驱动：
        无头浏览器在 --virtual-time-budget 下，rAF 会把虚拟时钟拖得很慢，定时器则能快速跑完异步链。 */
@@ -2395,16 +2522,21 @@
     chk('点击支线站（五根松）可到达并在四河换交路',
       hits === 1 && sim2.routeKey === '1branch', '耗时 ' + fmtDur(t2) + '，交路 ' + sim2.routeKey);
 
-    /* 跨线路：在 1 号线上点 2 号线车站 → 自动切换线路并派车 */
-    var eCross = etaFor('chunxilu');
-    chk('跨线路目标能识别并给出提示', !!(eCross && eCross.crossLine), eCross ? eCross.reason : 'null');
-    var bakTarget = state.target, bakRoute = state.routeKey, bakCur = state.curId;
-    setTarget('chunxilu');
-    chk('跨线路派车会自动切到 2 号线并设为目标',
-      state.routeKey === '2main' && state.target === 'chunxilu',
-      'route=' + state.routeKey + ' target=' + String(state.target) + ' 起点=' + M.byId[state.curId].zh);
-    state.routeKey = bakRoute; state.curId = bakCur; state.target = bakTarget;
-    state.posKm = stationKm(bakCur); recomputeEta();
+    /* 跨线路：交给跑那条线的那列车（不瞬移当前车） */
+    chk('跨线路目标交给跑那条线的列车（不瞬移当前车）', (function () {
+      var bak0 = snap(trains[0]), bak1 = snap(trains[1]), bakActive = activeIdx;
+      setActive(0);
+      var p0 = trains[0].posKm, p1 = trains[1].posKm;
+      setTarget('chunxilu');                        // 2 号线车站
+      var ok = activeIdx === 1 && trains[1].target === 'chunxilu' &&
+        Math.abs(trains[0].posKm - p0) < 1e-9 && Math.abs(trains[1].posKm - p1) < 1e-9 &&
+        ROUTES[trains[1].routeKey].lineKey === '2';
+      chk.__xl = 'active=' + activeIdx + ' 1号线位移=' + Math.abs(trains[0].posKm - p0).toFixed(3) +
+        ' 2号线位移=' + Math.abs(trains[1].posKm - p1).toFixed(3);
+      restore(trains[0], bak0); restore(trains[1], bak1);
+      setActive(bakActive);
+      return ok;
+    })(), chk.__xl);
 
     /* 后方站点：需要折返 */
     var sim3 = cloneState();
@@ -2505,6 +2637,95 @@
       checkUpdate(false);
       return location.href === before;               // 同版本时只提示，不跳转
     })());
+
+    chk('左上角「⟳ 刷新」按钮：在 HTML 层、左上角、≥44px、可点击', (function () {
+      var b = $('btnHardRefresh');
+      if (!b) return false;
+      var r = b.getBoundingClientRect();
+      var st = $('stage').getBoundingClientRect();
+      var hud = $('hud').getBoundingClientRect();
+      var overlapped = !(r.right <= hud.left - 1 || r.left >= hud.right + 1 || r.bottom <= hud.top - 1 || r.top >= hud.bottom + 1);
+      chk.__hr = 'inHTML=' + (b.closest('#stage') !== null) + ' pos=(' + Math.round(r.left - st.left) + ',' + Math.round(r.top - st.top) +
+        ') size=' + Math.round(r.width) + 'x' + Math.round(r.height) + ' 与HUD不重叠=' + !overlapped;
+      return b.closest('#stage') !== null && b.tagName === 'BUTTON' && r.height >= 44 && r.width >= 44 &&
+        (r.left - st.left) < 120 && (r.top - st.top) < 120 && !overlapped;
+    })(), chk.__hr);
+
+    chk('点「⟳ 刷新」= 强制整页重拉（cache-busting 地址，用桩验证不真跳转）', (function () {
+      resetReloadBudget();
+      hardReload(function () { /* 桩：不真跳转 */ });
+      var url = lastReloadUrl;
+      var ok = !!url && /[?&]_v=\d+/.test(url) && url.indexOf(location.pathname) === 0;
+      if (location.search) {
+        var key = location.search.replace(/^\?/, '').split('&')[0].split('=')[0];
+        ok = ok && url.indexOf(key + '=') >= 0;
+      }
+      chk.__hr2 = '刷新地址("' + String(url) + '")';
+      return ok;
+    })(), chk.__hr2);
+
+    chk('资源按版本号加载（防 Pages 10 分钟缓存）', (function () {
+      var scripts = document.querySelectorAll('script[src]');
+      var srcs = Array.prototype.map.call(scripts, function (s) { return s.getAttribute('src'); });
+      var hasApp = srcs.some(function (s) { return /app\.js/.test(s); });
+      var versioned = srcs.some(function (s) { return /app\.js\?v=/.test(s); });
+      chk.__ver = 'scripts=' + srcs.join(' ');
+      /* file:// 下拿不到版本号时按原路径加载也算通过 */
+      var offline = location.protocol !== 'http:' && location.protocol !== 'https:';
+      return hasApp && (versioned || offline);
+    })(), chk.__ver);
+
+    /* 回归：本轮的 reported bug（探路不瞬移 / 列表跟随 / 报站 / 定位不死循环） */
+    chk('同线路目标不改交路、不重置位置（由四河自然换交路）', (function () {
+      var bak = snap(state), bakActive = activeIdx, bakRoute = state.routeKey;
+      setActive(0);
+      state.routeKey = '1main';
+      var p = state.posKm;
+      setTarget('guangdu');                        // 支线车站
+      var ok = state.routeKey === '1main' && Math.abs(state.posKm - p) < 1e-9 && state.target === 'guangdu';
+      chk.__np2 = 'routeKey=' + state.routeKey + ' 位移=' + Math.abs(state.posKm - p).toFixed(3);
+      setTarget(null); restore(state, bak); state.routeKey = bakRoute; setActive(bakActive);
+      return ok;
+    })(), chk.__np2);
+
+    chk('到站/关门/发车三个时机都有报站（字幕 + 语音计数递增）', (function () {
+      var bak = snap(state), bakAudio = audio.on;
+      var ann0 = audio.announcements, seen = [];
+      setSound(true);
+      state.aOpened = false; state.aClosing = false; state.aDepart = false;
+      state.phase = 'dwell'; state.phaseT = 0; state.door = 0;
+      for (var i = 0; i < 400 && state.phase === 'dwell'; i++) {
+        stepTrain(state, 0.05);
+        var b = document.getElementById('announce');
+        if (b && b.textContent && seen.indexOf(b.textContent) < 0) seen.push(b.textContent);
+      }
+      var ok = seen.length >= 3 && audio.announcements > ann0 &&
+        seen.some(function (t) { return /站到了/.test(t); }) &&
+        seen.some(function (t) { return /车门即将关闭/.test(t); }) &&
+        seen.some(function (t) { return /下一站/.test(t); });
+      chk.__ann3 = seen.length + ' 条字幕 · 语音计数 ' + ann0 + '→' + audio.announcements + ' · ' +
+        seen.map(function (t) { return t.slice(0, 9); }).join('/');
+      setSound(bakAudio);
+      restore(state, bak);
+      return ok;
+    })(), chk.__ann3);
+
+    chk('气泡/列车标签定位有界（贴边不会卡死）', (function () {
+      var t0 = performance.now();
+      for (var i = 0; i < 20; i++) positionBubbles();
+      var ms = performance.now() - t0;
+      chk.__perf = '20 次 positionBubbles = ' + ms.toFixed(1) + ' ms';
+      return ms < 500;
+    })(), chk.__perf);
+
+    chk('站点列表跟随当前列车（当前站高亮、目标站标出）', (function () {
+      updateStationList();
+      var box = $('stlist');
+      var here = box.querySelectorAll('button.here');
+      var b = box.querySelector('[data-st="' + state.curId + '"]');
+      chk.__lst = '当前站=' + state.curId + ' here数=' + here.length + ' 高亮=' + (!!b && b.classList.contains('here'));
+      return here.length === 1 && !!b && b.classList.contains('here');
+    })(), chk.__lst);
 
     chk('渲染元素齐备（67 车站 / 67 标签 / 2 列车×8 车厢）',
       Object.keys(stationEls).length === 67 && labelEls.length === 67 &&
@@ -2799,10 +3020,13 @@
                 })());
                 /* 桩测试：服务端版本更新时，必须用 location.replace + 带 _v 的地址强制重载
                    （把 fetch 与 navigateTo 换成桩，既验证行为又不真的跳转） */
-                var origFetch = window.fetch, origNav = navigateTo, origVer = BUILD_VERSION, got = null, boom = '';
+                var origFetch = window.fetch, origNav = navigateTo, origVer = BUILD_VERSION, origRemote = REMOTE_VERSION;
+                var got = null, boom = '';
                 try {
+                  resetReloadBudget();                 // 清掉“防跑飞”预算，否则桩测试会被拦住
+                  BUILD_VERSION = { version: '2000-01-01.0000', commit: 'old' };   // 假装页面还是旧版
+                  REMOTE_VERSION = { version: '2099-01-01.0000', commit: 'new' };   // 假装服务端已是新版
                   navigateTo = function (u) { got = u; };
-                  BUILD_VERSION = { version: '2000-01-01.0000', commit: 'old' };
                   window.fetch = function () {
                     return Promise.resolve({
                       ok: true,
@@ -2830,6 +3054,7 @@
                   window.fetch = origFetch;
                   navigateTo = origNav;
                   BUILD_VERSION = origVer;
+                  REMOTE_VERSION = origRemote;
                   try { renderVersion(BUILD_VERSION); } catch (e3) { void e3; }
                   done();
                 }, 700);
@@ -2879,8 +3104,11 @@
       while (t < sec) { trains.forEach(function (tr) { stepTrain(tr, 0.05); }); t += 0.05; }
     },
     refreshUrlFor: refreshUrlFor, checkUpdate: checkUpdate, fetchVersion: fetchVersion,
-    get versionInfo() { return BUILD_VERSION; },
+    hardReload: hardReload, resetReloadBudget: resetReloadBudget, get lastReloadUrl() { return lastReloadUrl; },
+    navigateTo: function (u) { navigateTo(u); },
+    get versionInfo() { return BUILD_VERSION; }, get remoteVersion() { return REMOTE_VERSION; },
     audio: audio, setSound: setSound, initAudio: initAudio, announce: announce, announceText: announceText,
-    chime: chime, speak: speak, nextStopAfter: nextStopAfter
+    chime: chime, speak: speak, nextStopAfter: nextStopAfter, showAnnounce: showAnnounce,
+    trainIndexForLine: trainIndexForLine, updateStationList: updateStationList, scrollListToActive: scrollListToActive
   };
 })();
