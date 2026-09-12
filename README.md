@@ -21,8 +21,8 @@
 | `style.css` | 797 | 全部样式；横竖屏布局、安全区、面板折叠、站点悬浮窗、列车标签、到站气泡、触摸约束 |
 | `data.js` | 6（660 KB） | 由脚本生成的数据：**17 线路 / 18 交路 / 366 站 / 18 段轨道折线** + 底图（94 条河流、85 个湖泊、6018 段道路，均为地图坐标） |
 | `app.js` | 3787 | 弧长参数化、多线路/多交路、多列车、底图、渲染、运行状态机、强调/气泡、声音与报站、手势、刷新与版本戳、自检 |
-| `icon-180.png` | – | **iPad/iOS 主屏图标**（180×180，iOS 不支持透明，已合成到浅底色；同时声明 152/167） |
-| `icon-512.png` / `icon-32.png` | – | 通用图标（manifest / 浏览器标签页） |
+| `icon-180.png` | – | **iPad/iOS 主屏图标**（180×180）；由 `tools/make-icons.py` 从成品圆角图处理成 **full-bleed**（四角不留白，iOS 自己再加圆角）；同时声明 152/167 |
+| `icon-512.png` / `icon-32.png` | – | 通用图标（manifest / 浏览器标签页），同一套 full-bleed 处理（512 为全彩 PNG，216 KB） |
 | `manifest.json` | 15 | Web App Manifest：名称「豆豆国的地铁」、`display: standalone`、图标、主题色 |
 | `version.json` | 6 | 版本戳（`version` / `commit` / `builtAt`）；页面用 `fetch(..., {cache:'no-store'})` 现取并显示 |
 | `tools/fetch-osm-lines.py` | 162 | 抓各线路的 OSM 线路关系（站点顺序 + 轨道几何）→ `/tmp/osm-lines/*.json` |
@@ -30,6 +30,7 @@
 | `tools/fetch-basemap.py` | 236 | 分块抓全网水系 / 快速路（Overpass；全部端点不可用时用 OSM API `map` 调用兜底）→ `/tmp/basemap-raw/` |
 | `tools/build-basemap.py` | 293 | 底图合并 / 去重 / 分档抽稀 → `tools/basemap.json` |
 | `tools/build-data.py` | 589 | 单线路时代的旧生成器：现在只用来提供 1/2 号线人工核对的 `STATION_META` |
+| `tools/make-icons.py` | 86 | 把「圆角 + 四角白边」的成品图标处理成 full-bleed 方形 PNG（180/512/32，见第 4 节） |
 | `tools/bump-version.sh` | 32 | 生成 `version.json`（发版流程：提交代码 → 跑它 → 提交 version.json → push） |
 | `tools/headless-selftest.sh` | 64 | 无头自检 / 截图（Windows Edge `--headless=new`；`ALL=1` 打印全部断言，退出时清理自己启动的 Edge） |
 | `tools/lsp-probe-py.js` | 75 | 对 `tools/*.py` 发一次真实 LSP 会话，验证 basedpyright 可用（开发期工具，见第 9 节） |
@@ -199,8 +200,9 @@
 
 页面已声明 `apple-touch-icon`（180/152/167，指向 `icon-180.png`）、`apple-mobile-web-app-title`（豆豆国的地铁）、
 `apple-mobile-web-app-capable` 与 `manifest.json`（`display: standalone`）。Safari 里
-**分享 → 添加到主屏幕** 后，主屏图标即为豆豆（`icon-180.png`），点开是全屏无地址栏的独立窗口，状态栏为默认样式。
-若只想更新已有图标：删除旧图标后重新添加一次。
+**分享 → 添加到主屏幕** 后，主屏图标即为这枚图标（`icon-180.png`），点开是全屏无地址栏的独立窗口，状态栏为默认样式。
+**换过图标后必须在主屏上删掉旧图标、重新「添加到主屏幕」**：iOS 会缓存主屏图标，只刷新网页
+（或只点「⟳ 检查更新」）图标不会变；图标本身是 full-bleed 的方形图（四角不留白），圆角由 iOS 加。
 
 ## 5. 声音：BGM + 开关门提示音 + 语音报站
 
@@ -473,6 +475,13 @@ msedge.exe --headless=new --virtual-time-budget=9000 --window-size=1180,820 \
 ```
 
 ## 10. 更新记录
+
+* 2026-09-13 · **更换网页图标**：由用户提供的 `icon.jpg`（1254×1254，**已做过圆角、四周带白边**）
+  重新生成 `icon-180.png` / `icon-512.png` / `icon-32.png`。直接用会变成“白色方块里套一个圆角蓝方块”，
+  所以先做 **full-bleed** 处理：逐行把圆角之外的白边用**内侧蓝色镜像**补齐（不裁切，人物与底部
+  「成都地铁 / CHENGDU METRO」完整保留），再按 180/512/32 用 LANCZOS 缩放；新增 `tools/make-icons.py` 记录这一步。
+  `index.html` 的 `apple-touch-icon`/favicon 与 `manifest.json` 的引用路径不变（文件名不变）。
+  iPad 上要看到新图标：删掉主屏旧图标 → 重新「添加到主屏幕」。
 
 * 2026-09-13 · **补齐全网 17 条线路 + 底图扩到全覆盖 + 7 号线内环/外环文案**：
   ① **上线 8/9/10/13/17/18/19/27/30 号线与市域铁路 S3 资阳线**。全网 **17 条线路 / 18 个交路 / 366 个站点 / 83 个换乘站**，
