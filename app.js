@@ -2291,12 +2291,35 @@
   /* 站点列表：按线路/交路分组的折叠块 + 搜索（366 站，搜索是必需的） */
   var groupEls = [];
   var lastScrolledKey = null;
-  /* 双击站点行 → 把地图视角聚焦过去（居中到可见区，并放大到看得清的档位）
+  /* 手机上从列表定位时，先把抽屉收到 peek 那一档，否则视角移了也看不见 */
+  function revealMap() {
+    if (sheetMode() && sheet.snap !== 'peek') applySnap('peek');
+  }
+
+  /* 聚焦到某列车当前所在位置（不改缩放，只把视角中心移过去） */
+  function focusTrain(ti) {
+    var tr = trains[ti];
+    if (!tr) return;
+    var route = ROUTES[tr.routeKey];
+    if (ui.follow) setFollow(false);          // 否则下一帧就被跟随拉回列车原来那一侧
+    revealMap();                              // 先改可见区（抽屉让开），再算居中，否则会偏
+    var p = pointAt(route, kmToMap(route, tr.posKm));
+    view.fitted = false;
+    var vr = visibleRect();
+    view.tx = vr.w / 2 - p.x * view.k;
+    view.ty = vr.h / 2 - p.y * view.k;
+    clampView(); applyView(); updateLabelScale(); updateScaleBar();
+    layoutLabels(); positionBubbles();
+    toast('已定位到 ' + LINE_BY_KEY[route.lineKey].short + ' 列车');
+  }
+
+  /* 双击（或手机上直接点）站点行 → 把地图视角聚焦过去（居中到可见区，并放大到看得清的档位）
      跟随列车开着的时候必须先关掉，否则下一帧就被跟随拉回去了。 */
   function focusStation(id) {
     var st = M.byId[id];
     if (!st) return;
     if (ui.follow) setFollow(false);
+    revealMap();                              // 先让抽屉让开，再按新的可见区居中
     view.fitted = false;
     view.k = clamp(Math.max(view.k, 1.5), minZoom(), 16);
     var vr = visibleRect();
@@ -2305,7 +2328,6 @@
     clampView(); applyView(); updateLabelScale(); updateScaleBar();
     layoutLabels(); positionBubbles();
     openPopup(id, { x: st.x * view.k + view.tx, y: st.y * view.k + view.ty });
-    toast('已聚焦：' + st.zh);
   }
 
   function stationRow(id, noText) {
@@ -2334,12 +2356,16 @@
       t0.textContent = '换乘'; b.appendChild(t0);
     }
     if (st.status) { var t3 = document.createElement('span'); t3.className = 'tag'; t3.textContent = st.status; b.appendChild(t3); }
-    b.addEventListener('click', function () { setTarget(id); updateStationList(); });
+    b.addEventListener('click', function () {
+      setTarget(id);                 // 单击：列车运行到该站（原来的语义）
+      focusStation(id);              // 同时把视角移过去（用户要的“点一下就过去”）
+      updateStationList();
+    });
     b.addEventListener('dblclick', function (e) {
       e.preventDefault();
-      focusStation(id);                     // 双击 = 视角聚焦到该站（单击仍是“派车到该站”）
+      focusStation(id);              // 双击只是别名，行为一致
     });
-    b.title = '单击：列车运行到该站 · 双击：地图聚焦到该站';
+    b.title = '点一下：列车运行到该站，同时地图视角移过去';
     return b;
   }
 
@@ -2626,6 +2652,7 @@
       b.setAttribute('data-train', ti);
       b.addEventListener('click', function () {
         if (ti !== activeIdx) { setActive(ti); activateSideEffects(); }
+        focusTrain(ti);              // 点列表里的列车 = 切换 + 把视角移过去
       });
       box.appendChild(b);
     });
@@ -3764,6 +3791,68 @@
       return ms < 500;
     })(), chk.__perf);
 
+    chk('点站点行：既派车又把地图视角移过去（岛上/手机上都要）', (function () {
+      var bak = { k: view.k, tx: view.tx, ty: view.ty, fitted: view.fitted, target: state.target,
+                  snap: sheet.snap, popup: popupId, follow: ui.follow, sel: $('selRoute').value };
+      var bakTab = activeTab;
+      setTab('stations');
+      var probeId = state.curId;      // 用“当前站”：一定在当前线路上，悬浮窗能算出到达时间
+      var row = $('stlist').querySelector('button[data-st="' + probeId + '"]');
+      if (!row) { setTab(bakTab); return false; }
+      row.click();
+      var st = M.byId[probeId];
+      var vr = visibleRect();
+      var cx = st.x * view.k + view.tx, cy = st.y * view.k + view.ty;
+      var dx = Math.abs(cx - vr.w / 2), dy = Math.abs(cy - vr.h / 2);
+      var ok = state.target === probeId && dx < 3 && dy < 3 && view.k >= 1.4;
+      chk.__focus1 = '目标=' + String(state.target) + ' 偏差=(' + f2(dx) + ',' + f2(dy) + ') k=' + f2(view.k) +
+        ' 可见区=' + Math.round(vr.w) + 'x' + Math.round(vr.h) + ' 抽屉=' + $('app').getAttribute('data-snap');
+      /* 收尾：后面的断言还指望干净的现场（悬浮窗/抽屉/跟随/交路选择都要还原） */
+      state.target = bak.target;
+      recomputeEta();
+      if (bak.follow) setFollow(true);
+      if (bak.popup) openPopup(bak.popup); else closePopup();
+      $('selRoute').value = bak.sel;
+      if (sheetMode()) applySnap(bak.snap);
+      view.k = bak.k; view.tx = bak.tx; view.ty = bak.ty; view.fitted = bak.fitted;
+      if (view.fitted) fitView(); else { clampView(); applyView(); updateLabelScale(); updateScaleBar(); }
+      layoutLabels(); positionBubbles();
+      setTab(bakTab);
+      return ok;
+    })(), chk.__focus1);
+
+    chk('点列车卡：切当前列车 + 把地图视角移到它当前位置', (function () {
+      var bakActive = activeIdx;
+      var bak = { k: view.k, tx: view.tx, ty: view.ty, fitted: view.fitted, snap: sheet.snap, follow: ui.follow,
+                  sel: $('selRoute').value, popup: popupId };
+      var bakTab = activeTab;
+      setTab('train');
+      var card = $('trainChips').querySelectorAll('.tchip')[1];
+      if (!card) { setTab(bakTab); return false; }
+      card.click();
+      var tr = trains[1], route = ROUTES[tr.routeKey];
+      var p = pointAt(route, kmToMap(route, tr.posKm));
+      var sx = p.x * view.k + view.tx, sy = p.y * view.k + view.ty;
+      /* 地图有边界：靠边的列车只能移到边界处，所以判“已进屏且明显靠近中心” */
+      var vr = visibleRect();
+      var inView = sx > 0 && sx < stage.w && sy > 0 && sy < stage.h;
+      var near = Math.abs(sx - vr.w / 2) < vr.w * 0.45 && Math.abs(sy - vr.h / 2) < vr.h * 0.45;
+      var ok = activeIdx === 1 && inView && near;
+      chk.__focus2 = 'active=' + activeIdx + ' 列车屏幕=(' + Math.round(sx) + ',' + Math.round(sy) + ')' +
+        ' 可见区中心=(' + Math.round(vr.w / 2) + ',' + Math.round(vr.h / 2) + ')';
+      setActive(bakActive);
+      activateSideEffects();
+      if (bak.follow) setFollow(true);
+      if (bak.popup) openPopup(bak.popup); else closePopup();
+      $('selRoute').value = bak.sel;
+      if (sheetMode()) applySnap(bak.snap);
+      view.k = bak.k; view.tx = bak.tx; view.ty = bak.ty; view.fitted = bak.fitted;
+      if (view.fitted) fitView(); else { clampView(); applyView(); updateLabelScale(); updateScaleBar(); }
+      layoutLabels(); positionBubbles();
+      setTab(bakTab);
+      return ok;
+    })(), chk.__focus2);
+
     chk('站点列表跟随当前列车（当前站高亮、目标站标出）', (function () {
       updateStationList();
       var box = $('stlist');
@@ -4114,8 +4203,10 @@
     chk('当前控制列车有选中标识（虚线环 + 加粗描边）', (function () {
       var g = document.querySelectorAll('#trains .train');
       var act = document.querySelectorAll('#trains .train.active');
+      chk.__act2 = '组=' + g.length + '/' + trains.length + ' active=' + act.length +
+        ' activeIdx=' + activeIdx + ' 命中=' + (act[0] === g[activeIdx]);
       return g.length === trains.length && act.length === 1 && act[0] === g[activeIdx];
-    })());
+    })(), chk.__act2);
 
     chk('每列车下一站都有强调圈与到站气泡（含量化时间）', (function () {
       etaCache = [];
@@ -4132,6 +4223,8 @@
     })(), chk.__bub);
 
     chk('同一站点多列车 → 气泡折叠为一条，点击展开全部，点空白收起', (function () {
+      /* 小舞台（手机）本来就只弹当前列车的气泡（有意降噪），这个断言只看宽屏 */
+      if (stage.w < CFG.smallPillW) return true;
       var a = trains[0], b = trains[1], bak = [snap(a), snap(b), activeIdx];
       var r1 = ROUTES['1main'], r2 = ROUTES[L2];
       var i1 = r1.ids.indexOf('tianfuguangchang'), i2 = r2.ids.indexOf('tianfuguangchang');
@@ -4294,15 +4387,18 @@
                 chk('悬浮窗按钮变为可取消', /取消/.test($('spGo').textContent), $('spGo').textContent);
                 setTarget(null);
                 closePopup();
-                /* 面板：展开时右缘贴屏幕右缘；收起时只留屏右缘的把手 */
+                /* 面板：展开时右缘贴屏幕右缘；收起时只留屏右缘的把手；抽屉模式下看可见带 */
                 var pr = $('panel').getBoundingClientRect();
                 var visW = Math.max(0, Math.min(pr.right, window.innerWidth) - Math.max(pr.left, 0));
-                chk('控制面板在视口内（收起时只留屏幕右缘的把手）',
-                  pr.top >= -1 && pr.bottom <= window.innerHeight + 1 &&
-                  visW >= 30 && visW <= window.innerWidth + 1 &&
-                  (sheetMode() || panel.collapsed ? true : pr.right <= window.innerWidth + 1),
+                var visH = Math.max(0, Math.min(pr.bottom, window.innerHeight) - Math.max(pr.top, 0));
+                var sheetOk = sheetMode() ? (visH >= 80 && pr.left >= -1 && pr.right <= window.innerWidth + 1)
+                                          : (pr.right <= window.innerWidth + 1 || panel.collapsed);
+                chk('控制面板在视口内（收起时只留屏幕右缘的把手；抽屉模式下看可见带）',
+                  pr.top >= -1 && sheetOk &&
+                  visW >= 30 && visW <= window.innerWidth + 1,
                   'panel=[' + Math.round(pr.left) + ',' + Math.round(pr.top) + ',' + Math.round(pr.right) + ',' + Math.round(pr.bottom) +
-                  '] 可见宽=' + Math.round(visW) + ' 收起=' + panel.collapsed + ' viewport=' + window.innerWidth + 'x' + window.innerHeight);
+                  '] 可见=' + Math.round(visW) + 'x' + Math.round(visH) + ' 抽屉模式=' + sheetMode() +
+                  ' 收起=' + panel.collapsed + ' viewport=' + window.innerWidth + 'x' + window.innerHeight);
                 chk('页面无横向/纵向溢出',
                   document.documentElement.scrollWidth <= window.innerWidth + 1 &&
                   document.documentElement.scrollHeight <= window.innerHeight + 1,
@@ -4581,7 +4677,7 @@
     stepTrain: stepTrain, setTarget: setTarget, reset: resetState,
     pointAt: pointAt, kmToMap: kmToMap, recomputeEta: recomputeEta,
     hitStation: hitStation, zoomAt: zoomAt, fitView: fitView, view: view,
-    focusStation: focusStation, openPopup: openPopup, closePopup: closePopup,
+    focusStation: focusStation, focusTrain: focusTrain, openPopup: openPopup, closePopup: closePopup,
     clampView: clampView, applyView: applyView, updateScaleBar: updateScaleBar,
     updateLabelScale: updateLabelScale, layoutLabels: layoutLabels, labelScaleOf: function () { return labelScale; },
     applySnap: applySnap, setTab: setTab, renderStationList: renderStationList, sheet: sheet,
