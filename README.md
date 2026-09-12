@@ -405,20 +405,26 @@ FILE:// SELFTEST ok = True checks 50
 
 | 工具 | 用途 | 安装 |
 |---|---|---|
-| node ≥ 18 | `node --check app.js data.js` 语法校验 | 已随环境提供（v24.21.0） || python3 | `./serve.sh` 起静态服务器；`tools/build-data.py` 生成 `data.js`；`tools/bump-version.sh` 生成版本戳 | 系统自带（3.14） |
+| node ≥ 18 | `node --check app.js data.js` 语法校验 | 已随环境提供（v24.21.0） |
+| python3 | `./serve.sh` 起静态服务器；`tools/build-lines.py` 生成 `data.js`；`tools/bump-version.sh` 生成版本戳 | 系统自带（3.14） |
 | Microsoft Edge / Chromium | 无头自检与截图：`msedge.exe --headless=new --dump-dom '…?selftest=1'`、`--screenshot=…` | 系统已有 |
 | **typescript-language-server** | **编辑器（nvim 的 lspconfig）与 AI 工具链读 JS 诊断/符号/类型用；与应用零依赖无关** | **全局：`npm i -g typescript-language-server typescript`**（本机没有 bun；全局 bin 在 nvm 的 PATH 上，`nvim` 的 `vim.fn.exepath('typescript-language-server')` 能找到） |
 | **typescript（项目内 devDependency）** | 上面那个 server 会从**工作区**解析 `node_modules/typescript/lib/tsserver.js`；**注意 TypeScript 7.x 不再提供 `tsserver.js`**，所以项目里固定用 5.x：`npm i -D --no-package-lock typescript@5`（生成 `package.json`，已被提交；`node_modules/` 在 `.gitignore` 里，**不提交**） | 同上 |
+| **basedpyright** | **给 `tools/*.py` 这些构建脚本提供 Python 诊断/跳转（编辑器与 AI 工具链用）；同样只在开发期用，与应用运行时零依赖无关** | **全局：`npm i -g basedpyright`**（本机没有 bun；npm 包会带上 PyPI 的 basedpyright wheel，同时提供 `basedpyright` 与 `basedpyright-langserver` 两个入口，都在 nvm 的 PATH 上）。与 typescript-language-server 一样，AI 工具链的 `lsp_diagnostics` 只在会话启动时探测 server，**装完要重启一次会话**才认得） |
 
 装完自验（在本仓库跑真实 LSP 会话，不需要编辑器）：
 
 ```bash
 typescript-language-server --version      # 期望 6.x
 tsc --version                             # 期望 5.x（项目内 node_modules）
+basedpyright --version                    # 期望 1.40.x（based on pyright …）
 # 用一个临时脚本对 app.js 发 initialize / didOpen / documentSymbol / hover，看能否拿到符号与类型
 node /tmp/lsp-probe3.js
 #   → documentSymbol: 1495 个符号；hover(CFG) 返回
 #     "(local var) CFG: { vmax: number; accel: number; … cars: … }"
+# 对 tools/*.py 发一次真实 LSP 会话（同一套探针，languageId=python）
+node /tmp/lsp-probe-py.js tools/fetch-osm-lines.py
+#   → documentSymbol: 42 个符号；publishDiagnostics: error 2 / warning 83
 ```
 
 > 注：AI 工具自带的 `lsp_diagnostics` 是在会话启动时探测 server 的，**装完需要重启一次会话**它才能用上；

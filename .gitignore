@@ -14,3 +14,6 @@ Thumbs.db
 # Python 脚本运行产物
 __pycache__/
 *.pyc
+
+# 生成器产物（由 tools/build-lines.py --write-shift 生成，见 README 第 6/9 节）
+tools/basemap-shift.json
