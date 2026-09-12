@@ -54,7 +54,7 @@
 
   /* --------------------------------------------------------------- 运行时状态 */
   /* 全局（与列车无关）的运行/视图开关 */
-  var ui = { paused: false, mult: 1, follow: false };
+  var ui = { paused: false, mult: 1, follow: false, showLines: {} };
   /* 时间流逝比例：现实 1 秒 = 游戏 TIME_BASE 秒（基础 1:2），面板倍速在此之上再乘 */
   var TIME_BASE = 2;
   function timeRatio() { return TIME_BASE * (ui.mult || 1); }
@@ -421,16 +421,18 @@
       var seen = {};
       line.services.forEach(function (s) {
         (s.tracks || []).forEach(function (tk) {
-          if (!seen[tk] && TRACKS[tk]) { seen[tk] = 1; order.push({ k: tk, color: line.color }); }
+          if (!seen[tk] && TRACKS[tk]) { seen[tk] = 1; order.push({ k: tk, color: line.color, lineKey: line.key }); }
         });
       });
     });
     order.forEach(function (o) {
       var tr = TRACKS[o.k];
       var d = 'M' + tr.samples.map(function (p) { return f1(p.x) + ' ' + f1(p.y); }).join('L');
-      svg('path', { class: 'rail-bed', d: d, 'stroke-width': 15 }, g);
+      var bed = svg('path', { class: 'rail-bed', d: d, 'stroke-width': 15 }, g);
       var path = svg('path', { class: 'rail', d: d, 'stroke-width': 10.5 }, g);
       path.style.stroke = o.color;          // CSS 里的 .rail 用 var(--line)，这里按线路覆盖
+      regLine(o.lineKey, bed);
+      regLine(o.lineKey, path);
     });
     /* 分叉站标记（同线路多条交路的换乘点，如 1 号线四河） */
     Object.keys(LINE_SWITCH).forEach(function (lk) {
@@ -469,6 +471,7 @@
         if (st.noStop) { dot.style.fill = '#fff'; dot.style.strokeDasharray = '2.6 2.6'; }
       }
       stationEls[st.id] = dotG;
+      (st.lines || []).forEach(function (k) { regLine(k, dotG); });
     });
   }
 
@@ -512,6 +515,7 @@
         key: st.tr.length > 0 || st.term || !!st.junction, w: 0, h: 31 + pillsH
       };
       labelEls.push(L);
+      (st.lines || []).forEach(function (k) { regLine(k, L.g); });
     });
   }
 
@@ -636,6 +640,7 @@
         });
       }
       trainGroups.push({ g: g, sel: sel, els: els });
+      regLine(ROUTES[tr.routeKey].lineKey, g);
     });
   }
 
@@ -814,6 +819,10 @@
     trains.forEach(function (tr, ti) {
       var mk = markEls[ti];
       if (!mk) return;
+      if (!lineVisible(ROUTES[tr.routeKey].lineKey)) {       // 该线被图例筛掉了：不画强调圈
+        mk.halo.style.display = mk.ring.style.display = 'none';
+        return;
+      }
       var info = etaCache[ti];
       if (!info || now - info.at > 900) {
         info = legEta(tr);
@@ -900,6 +909,61 @@
     return items.map(function (it) {
       return it.summary ? 'S' + it.list.length : 'T' + it.ti + ':' + (it.sec != null ? Math.round(it.sec / 5) : it.note);
     }).join('|');
+  }
+
+  /* ==================================================== 线路筛选（图例色块点击）
+     线路多了以后图例不能一行一条；改成色块网格，点一下只看该线（可多选），再点取消。
+     把每条线的轨道/车站/标签/列车元素登记下来，过滤时整组隐藏。 */
+  var lineElems = {};
+  function regLine(key, el) {
+    if (!key || !el) return;
+    (lineElems[key] = lineElems[key] || []).push(el);
+  }
+  function lineVisible(key) {
+    var keys = Object.keys(ui.showLines || {});
+    if (!keys.length) return true;
+    return !!ui.showLines[key];
+  }
+  function applyLineFilter() {
+    Object.keys(lineElems).forEach(function (k) {
+      var on = lineVisible(k);
+      lineElems[k].forEach(function (el) { el.classList.toggle('line-off', !on); });
+    });
+    var solo = Object.keys(ui.showLines || {}).length > 0;
+    $('legend').classList.toggle('filtering', solo);
+    /* 图例色块的选中态 */
+    var box = $('lgLines');
+    if (box) {
+      Array.prototype.forEach.call(box.children, function (b) {
+        var k = b.getAttribute('data-line');
+        b.classList.toggle('off', solo && !ui.showLines[k]);
+      });
+    }
+    updateNextMarks();          /* 被隐藏的线路不再弹到站气泡 */
+    positionBubbles();
+  }
+  function buildLegend() {
+    var box = $('lgLines');
+    if (!box) return;
+    box.innerHTML = '';
+    LINES.forEach(function (l) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'lg-chip';
+      b.setAttribute('data-line', l.key);
+      b.style.background = l.color;
+      b.textContent = l.key;
+      b.title = l.name + '（点一下只看该线，可多选）';
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        ui.showLines = ui.showLines || {};
+        if (ui.showLines[l.key]) delete ui.showLines[l.key];
+        else ui.showLines[l.key] = true;
+        applyLineFilter();
+        toast(Object.keys(ui.showLines).length ? '只看：' + Object.keys(ui.showLines).join('、') + ' 号线' : '已显示全部线路');
+      });
+      box.appendChild(b);
+    });
   }
 
   /* 地图上的 HTML 覆盖件（HUD/按钮/图例/比例尺/版本徽标/站点悬浮窗）占据的区域：
@@ -2263,6 +2327,7 @@
     resetAllTrains();
     buildLineSelector();
     buildTrainChips();
+    buildLegend();
     buildTrainPills();
     bindControls();
     bindVersionUI();
@@ -3308,6 +3373,7 @@
     audio: audio, setSound: setSound, initAudio: initAudio, announce: announce, announceText: announceText,
     chime: chime, speak: speak, nextStopAfter: nextStopAfter, showAnnounce: showAnnounce,
     reservedBoxes: reservedBoxes, updateTtsHint: updateTtsHint, unlockAudio: unlockAudio,
+    applyLineFilter: applyLineFilter, buildLegend: buildLegend, lineElems: lineElems, lineVisible: lineVisible,
     trainIndexForLine: trainIndexForLine, updateStationList: updateStationList, scrollListToActive: scrollListToActive
   };
 })();

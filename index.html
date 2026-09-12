@@ -63,19 +63,19 @@
     </div>
 
     <div id="legend" class="panel-glass">
-      <div class="lg-title">图例</div>
-      <div class="lg-item"><span class="lg-line lg-l1"></span>1 号线（韦家碾—科学城，含支线）</div>
-      <div class="lg-item"><span class="lg-line lg-l2"></span>2 号线（犀浦—龙泉驿）</div>
-      <div class="lg-item"><span class="lg-dot lg-transfer"></span>换乘站（天府广场）</div>
-      <div class="lg-item"><span class="lg-dot lg-normal"></span>普通站</div>
-      <div class="lg-item"><span class="lg-dot lg-term"></span>端点站</div>
-      <div class="lg-item"><span class="lg-dot lg-planned"></span>在建 / 暂停运营站</div>
-      <div class="lg-item"><span class="lg-pill">2</span>可换乘线路编号</div>
+      <div class="lg-title">图例 <span class="muted" id="lgHint">（点线号只看该线，可多选）</span></div>
+      <div id="lgLines" class="lg-lines"></div>
+      <div class="lg-note-row">
+        <span class="lg-item"><span class="lg-dot lg-transfer"></span>换乘站</span>
+        <span class="lg-item"><span class="lg-dot lg-normal"></span>普通站</span>
+        <span class="lg-item"><span class="lg-dot lg-term"></span>端点站</span>
+        <span class="lg-item"><span class="lg-dot lg-planned"></span>在建/暂停</span>
+      </div>
       <div class="lg-item lg-ver" id="verRow" title="当前版本，点一下检查更新">
         <span class="lg-ver-label">版本</span>
         <span class="muted" id="verText">读取中…</span>
       </div>
-      <div class="lg-note">站点坐标与轨道几何：© OpenStreetMap contributors（ODbL 1.0）；站序/换乘：百度百科词条。底图为示意，非导航用途。</div>
+      <div class="lg-note">站点坐标与轨道几何：© OpenStreetMap contributors（ODbL 1.0）；站序/换乘：OpenStreetMap 线路关系。底图为示意，非导航用途。</div>
     </div>
 
     <div id="scalebar" class="panel-glass">
