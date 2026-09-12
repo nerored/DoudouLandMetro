@@ -1,0 +1,15 @@
+{
+  "name": "豆豆国的地铁 — 成都地铁 1/2 号线",
+  "short_name": "豆豆国的地铁",
+  "description": "成都地铁 1/2 号线示意线路图与 3 车厢列车运行模拟（iPad 触屏）",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2efe8",
+  "theme_color": "#0d6cb5",
+  "icons": [
+    { "src": "./icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
