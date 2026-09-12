@@ -29,6 +29,7 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
+  height: 100dvh;              /* iOS：跟随可见区域，避免被 Safari 工具栏顶出屏幕 */
   overflow: hidden;
   overscroll-behavior: none;
   background: var(--paper);
@@ -49,6 +50,10 @@ body {
 #app {
   position: fixed;
   inset: 0;
+  width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
   display: flex;
   flex-direction: row;
   padding: var(--sa-t) var(--sa-r) var(--sa-b) var(--sa-l);
@@ -75,13 +80,16 @@ body {
 #map.dragging { cursor: grabbing; }
 
 #panel {
-  flex: 0 0 340px;
-  width: 340px;
+  flex: 0 1 clamp(240px, 28vw, 340px);
+  width: clamp(240px, 28vw, 340px);
   min-height: 0;
+  max-height: 100%;
   background: #fbfaf6;
   border-left: 1px solid var(--edge);
   overflow: hidden;
 }
+/* 折叠：由舞台上的 “☰ 控制” 按钮切换 */
+#app.panel-hidden #panel { display: none; }
 
 .panel-scroll {
   height: 100%;
@@ -100,12 +108,17 @@ body {
   #panel {
     flex: 0 0 auto;
     width: auto;
-    height: 44%;
-    min-height: 240px;
+    height: auto;
+    max-height: 42dvh;
+    min-height: 180px;
     border-left: none;
     border-top: 1px solid var(--edge);
   }
-  #stage { flex: 1 1 auto; }
+  #stage { flex: 1 1 auto; min-height: 0; }
+}
+
+@media (max-height: 520px) {
+  #panel { min-height: 120px; max-height: 46dvh; }
 }
 
 /* ---------------------------------------------------------------- 卡片 */
@@ -257,9 +270,24 @@ body {
   flex-direction: column;
   gap: 6px;
   max-width: calc(100% - 24px);
-  pointer-events: none;
+  cursor: pointer;
 }
-.hud-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+/* 点品牌行折叠状态栏，给地图腾地方 */
+.hud.folded .hud-row { display: none; }
+.hud-fold { font-style: normal; font-size: 12px; color: var(--ink-soft); margin-left: 2px; }
+.hud.folded .hud-fold { transform: rotate(-90deg); display: inline-block; }
+.hud-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; pointer-events: none; }
+.hud-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: .02em;
+  color: var(--ink);
+  pointer-events: auto;
+}
+.hud-brand span { font-size: 11px; font-weight: 500; color: var(--ink-soft); }
 .hud-kv { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
 .hud-kv i { font-style: normal; font-size: 11px; color: var(--ink-soft); }
 .hud-kv b { font-size: 14px; font-weight: 700; }
@@ -292,15 +320,17 @@ body {
   padding: 8px 10px;
   font-size: 11.5px;
   color: var(--ink-soft);
-  max-width: 230px;
+  max-width: 268px;
 }
 .lg-title { font-weight: 700; color: var(--ink); margin-bottom: 4px; font-size: 12px; }
 .lg-item { display: flex; align-items: center; gap: 6px; line-height: 1.7; }
 .lg-dot { width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid var(--line); flex: 0 0 auto; }
 .lg-transfer { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--line); margin: 3px; }
 .lg-term { border-radius: 3px; background: var(--line); }
-.lg-line { width: 18px; height: 4px; border-radius: 2px; background: repeating-linear-gradient(90deg, var(--line) 0 4px, transparent 4px 7px); }
-.lg-branch { background: repeating-linear-gradient(90deg, #7fa8c9 0 4px, transparent 4px 7px); }
+.lg-planned { border-radius: 50%; border: 2px dashed #9aa4ae; background: #fff; }
+.lg-line { width: 20px; height: 5px; border-radius: 3px; background: var(--line); flex: 0 0 auto; }
+.lg-l2 { background: #e8792a; }
+.lg-branch { background: repeating-linear-gradient(90deg, var(--line) 0 4px, transparent 4px 7px); }
 .lg-pill {
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; border-radius: 5px;
@@ -325,7 +355,115 @@ body {
 #sbFill { display: block; height: 100%; background: rgba(13, 108, 181, .22); }
 .sb-label { font-size: 11px; color: var(--ink-soft); margin-top: 3px; }
 
-#compass { right: calc(8px + var(--sa-r)); top: calc(8px + var(--sa-t)); padding: 4px; }
+#compass { right: calc(8px + var(--sa-r)); top: calc(60px + var(--sa-t)); padding: 4px; }
+
+/* 控制面板折叠按钮 */
+.panel-toggle {
+  position: absolute;
+  z-index: 30;
+  top: calc(8px + var(--sa-t));
+  right: calc(8px + var(--sa-r));
+  min-height: var(--tap);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  background: rgba(255, 255, 255, .93);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.panel-toggle:active { background: #eef4fa; }
+#app:not(.panel-hidden) .panel-toggle { color: var(--line-dark); }
+
+/* ---------------------------------------------------------------- 站点悬浮窗 */
+.stpop {
+  position: absolute;
+  z-index: 40;
+  width: min(292px, calc(100% - 20px));
+  max-height: calc(100% - 16px);
+  overflow: hidden;
+  padding: 10px 12px 12px;
+  background: rgba(255, 255, 255, .97);
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  box-shadow: 0 2px 6px rgba(30, 40, 50, .12), 0 14px 32px rgba(30, 40, 50, .20);
+  touch-action: none;
+  backdrop-filter: blur(2px);
+}
+/* 舞台很矮时（横屏手机 / 竖屏小窗）收紧悬浮窗，保证“到达时间 + 状态 + 派车按钮”一定在屏内 */
+@media (max-height: 640px) {
+  .stpop { width: min(272px, calc(100% - 16px)); padding: 8px 10px 10px; }
+  .stpop-zh { font-size: 16px; }
+  .stpop-eta { margin: 6px 0 2px; padding: 5px 8px; }
+  .stpop-eta-num { font-size: 18px; }
+  .stpop-plan { display: none; }
+  .stpop-rows .stpop-row:nth-child(n+4) { display: none; }
+  .stpop .btn-block { margin-top: 8px; }
+}
+/* 极矮的舞台（横屏小窗）：只保留 站名 + 到达时间 + 派车按钮，列车状态看左上角 HUD */
+@media (max-height: 520px) {
+  .stpop-rows, .stpop-en, .stpop-plan { display: none; }
+}
+.stpop[hidden] { display: none; }
+.stpop-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 38px;
+  height: 38px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.stpop-x:active { background: #eeeae0; }
+.stpop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-right: 34px;
+  flex-wrap: wrap;
+}
+.stpop-line {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--line);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.stpop-zh { font-size: 18px; font-weight: 700; }
+.stpop-en { font-size: 11px; color: var(--ink-soft); width: 100%; }
+.stpop-eta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 8px 0 2px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: #eef4fa;
+}
+.stpop-eta-num { font-size: 20px; font-weight: 700; color: var(--line-dark); font-variant-numeric: tabular-nums; }
+.stpop-eta-lbl { font-size: 11.5px; color: var(--ink-soft); }
+.stpop-plan { font-size: 12px; color: var(--ink-soft); line-height: 1.45; margin: 6px 0 4px; }
+.stpop-rows { display: flex; flex-direction: column; gap: 3px; }
+.stpop-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.stpop-row i { font-style: normal; color: var(--ink-soft); flex: 0 0 auto; }
+.stpop-row b { font-weight: 600; text-align: right; }
+.stpop .btn-block { margin-top: 10px; }
+.stpop .btn[disabled] { opacity: .5; }
 
 .toast {
   position: absolute;
@@ -347,7 +485,7 @@ body {
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 /* ---------------------------------------------------------------- 站点列表 */
-.stlist { max-height: 40vh; overflow-y: auto; touch-action: pan-y; margin: -4px -4px 0; padding: 0 4px; }
+.stlist { max-height: min(38dvh, 320px); overflow-y: auto; touch-action: pan-y; margin: -4px -4px 0; padding: 0 4px; }
 .stlist .grp {
   font-size: 11px;
   font-weight: 700;
