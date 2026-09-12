@@ -224,6 +224,24 @@
     for (i = 1; i < samples.length; i++) {
       cum[i] = cum[i - 1] + Math.hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y);
     }
+    /* 环线：把采样起点旋到「本交路首发站」处（环的首尾相接，否则首站会落在环的末端、里程不为 0） */
+    if (isLoop) {
+      var st0 = M.byId[(svc.stationIds || [])[0]];
+      if (st0) {
+        var bi = 0, bd = Infinity;
+        for (i = 0; i < samples.length; i++) {
+          var dd = Math.hypot(samples[i].x - st0.x, samples[i].y - st0.y);
+          if (dd < bd) { bd = dd; bi = i; }
+        }
+        if (bi > 0) {
+          samples = samples.slice(bi).concat(samples.slice(0, bi));
+          cum = [0];
+          for (i = 1; i < samples.length; i++) {
+            cum[i] = cum[i - 1] + Math.hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y);
+          }
+        }
+      }
+    }
     var route = {
       key: svc.key, label: svc.label, lineKey: svc.lineKey, color: svc.color,
       loop: isLoop,
@@ -655,6 +673,29 @@
         ov += overlapArea(ra, vis2[b2].__rect);
       }
       if (ov / areaA > 0.3) vis2[a].g.classList.add('offscreen');
+    }
+    /* 后处理 2（关键）：按“与单个标签的最大重叠 ÷ 自身面积”剔除违规者
+       —— 与自检同一口径（标准 25%），并且把被剔除的**从 labelBoxes 里移除**，
+       否则它们仍然会被统计（之前的 bug：只藏不删，所以 1400×900 怎么都过不了）。 */
+    for (var pass = 0; pass < 4; pass++) {
+      var removed = 0;
+      for (var i2 = labelBoxes.length - 1; i2 >= 0; i2--) {
+        var bi = labelBoxes[i2];
+        var ai = Math.max(1, bi.w * bi.h);
+        var mx = 0;
+        for (var j2 = 0; j2 < labelBoxes.length; j2++) {
+          if (j2 === i2) continue;
+          mx = Math.max(mx, overlapArea(bi, labelBoxes[j2]) / ai);
+        }
+        if (mx > 0.20) {
+          for (var q2 = 0; q2 < labelEls.length; q2++) {
+            if (labelEls[q2].__rect === bi) { labelEls[q2].g.classList.add('offscreen'); break; }
+          }
+          labelBoxes.splice(i2, 1);
+          removed++;
+        }
+      }
+      if (!removed) break;
     }
   }
   function overlapArea(a, b) {
@@ -2697,6 +2738,16 @@
       '龙泉驿火车站', '大面铺', '连山坡', '界牌', '书房', '龙平路', '龙泉驿'];
     function zh(key) { return ROUTES[key].ids.map(function (id) { return M.byId[id].zh; }); }
     var expectCounts = { '1': 33, '2': 32, '3': 37, '4': 30, '5': 41, '6': 56, '7': 32 };
+    var loopSvc = Object.keys(ROUTES).filter(function (k) { return ROUTES[k].loop; });
+    chk('环线（7 号线）：标记 loop、里程从首发站起算、首末站同名',
+      loopSvc.length === 0 || (ROUTES[loopSvc[0]].kmAt[0] < 0.6 &&
+        ROUTES[loopSvc[0]].label.indexOf('↔') > 0 &&
+        M.byId[ROUTES[loopSvc[0]].ids[0]].zh === M.byId[ROUTES[loopSvc[0]].ids[ROUTES[loopSvc[0]].ids.length - 1]].zh),
+      loopSvc.length ? (ROUTES[loopSvc[0]].label + ' km0=' + f2(ROUTES[loopSvc[0]].kmAt[0]) +
+        ' 首/末=' + M.byId[ROUTES[loopSvc[0]].ids[0]].zh + '/' +
+        M.byId[ROUTES[loopSvc[0]].ids[ROUTES[loopSvc[0]].ids.length - 1]].zh)
+        : '当前数据无环线');
+
     var cntOk = M.lines.every(function (l) { var e = expectCounts[l.key]; return e === undefined || l.services[0].stationIds.length >= e - 1; });
     chk('每线路站数接近 OSM 关系站点数（1:33 2:32 3:37 4:30 5:41 6:56 7:32）', cntOk && M.stations.length >= 60,
       '共 ' + M.stations.length + ' 站 · ' + M.lines.length + ' 条线路');
