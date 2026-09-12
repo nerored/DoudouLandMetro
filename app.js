@@ -575,7 +575,38 @@
     });
     labelBoxes = [];
     var vis = labelEls.filter(function (L) { return L.vis; });
+    /* 小视口下的“标签预算”：屏幕小就少显示几个，但优先保住当前控制列车的当前站/下一站/目标站，
+       其次换乘站、端点站——这样绝对重叠量真的下降（而不是把标准放寛）。 */
+    function prio(L) {
+      var st = L.st, p = 0;
+      if (st.id === state.curId) p += 1000;
+      var nxId = ROUTES[state.routeKey].ids[state.nextIdx];
+      if (st.id === nxId) p += 900;
+      if (state.target && st.id === state.target) p += 800;
+      if (st.term) p += 200;
+      if (st.lines && st.lines.length > 1) p += 300;
+      if (st.tr && st.tr.length) p += 100;
+      return p;
+    }
+    var budget = (stage.w * stage.h) < 900000 ? clamp(Math.round((stage.w * stage.h) / 45000), 8, 22) : 999;
+    if (budget < 999) {
+      vis = vis.slice().sort(function (a, b) {
+        var pa = prio(a), pb = prio(b);
+        if (pa !== pb) return pb - pa;
+        if (a.key !== b.key) return a.key ? -1 : 1;
+        return a.st.y - b.st.y;
+      }).slice(0, budget);
+      var inBudget = {};
+      vis.forEach(function (L) { inBudget[L.st.id] = 1; });
+      labelEls.forEach(function (L) {
+        if (L.vis && !inBudget[L.st.id]) L.g.classList.add('offscreen');
+      });
+    }
     var order = vis.slice().sort(function (a, b) {
+      if (budget < 999) {
+        var pa = prio(a), pb = prio(b);
+        if (pa !== pb) return pb - pa;
+      }
       if (a.key !== b.key) return a.key ? -1 : 1;
       return a.st.y - b.st.y;
     });
@@ -1122,7 +1153,7 @@
 
   /* 切换交路（不重置列车位置：旧位置仍在新交路上就保位置，否则退到分叉站） */
   function switchService(key, quiet) {
-    if (!ROUTES[key] || key === state.routeKey) return false;
+    if (!ROUTES[key] || key === state.routeKey) { syncRouteSelect(); return false; }
     var r = ROUTES[key];
     var i = r.ids.indexOf(state.curId);
     var moved = false;
@@ -1152,12 +1183,19 @@
     state.v = 0;
     state.aOpened = true; state.aClosing = true; state.aDepart = true;   // 切交路不报站
     if (world) world.style.setProperty('--line', r.color);
+    syncRouteSelect();
     if (!quiet) {
       toast('交路切换为 ' + r.label + '（' + lineOf(key).short + '）' +
         (moved ? '，列车退至' + M.byId[state.curId].zh + '站' : ''));
     }
     recomputeEta();
     return true;
+  }
+
+  /* 交路下拉始终反映“当前控制列车所属线路 + 交路”（列车卡片/地图点车/点站切线路都要同步） */
+  function syncRouteSelect() {
+    var sel = $('selRoute');
+    if (sel && state && state.routeKey && sel.value !== state.routeKey) sel.value = state.routeKey;
   }
 
   /* 找到跑某条线路的那列车（没有则返回 -1） */
@@ -1971,6 +2009,8 @@
   function updateTrainChips() {
     var box = $('trainChips');
     if (!box) return;
+    var cnt = $('trainCount');
+    if (cnt) cnt.textContent = '共 ' + trains.length + ' 列（每线 1 列，全部自动运行）';
     trains.forEach(function (tr, ti) {
       var b = box.querySelector('[data-train="' + ti + '"]');
       if (!b) return;
@@ -2525,6 +2565,7 @@
         state.curId = ROUTES[map.route].ids[0];
         state.posKm = ROUTES[map.route].kmAt[0];
         state.nextIdx = 1;
+        syncRouteSelect();
       } else {
         var kk = ROUTE_KEYS.filter(function (k) {
           return ROUTES[k].lineKey === map.route || k === map.route + 'main';
