@@ -2066,9 +2066,17 @@
     /* 字幕：不管能不能出声都显示报站内容（iOS 主屏 standalone 对 TTS 有限制时也有反馈） */
     showAnnounce(text);
     if (!audio.on) return;
-    if (kind === 'open' || kind === 'arrive') { chime('open'); speak(ui.mult >= 2 ? ctxObj.zh + '站' : text, true); }
-    else if (kind === 'closing') { chime('warn'); speak(text, false); }
-    else { chime('close'); speak(text, false); }
+    if (kind === 'open' || kind === 'arrive') {
+      chime('open');
+      /* 倍速越高停站越短：5x/10x 只留提示音与字幕（否则语音会连成一片） */
+      if (ui.mult <= 2) speak(ui.mult === 1 ? text : ctxObj.zh + '站', true);
+    } else if (kind === 'closing') {
+      chime('warn');
+      if (ui.mult <= 2) speak(text, false);
+    } else {
+      chime('close');
+      if (ui.mult <= 2) speak(text, false);
+    }
   }
 
   /* 报站字幕条（舞台下方居中；TTS 被限制时也能“看”到报站） */
@@ -2262,8 +2270,10 @@
       if (dt > 0) {
         trains.forEach(function (tr) {
           var left = dt, guard = 0;
-          while (left > 1e-6 && guard++ < 12) {      // 大 dt 时拆分子步保证物理稳定
-            var sub = Math.min(left, 0.04);
+          /* 子步上限 0.05s、最多 40 步 → 单帧最多推进 2s 仿真时间，
+             足以支持 10x（帧间隔上限 0.12s × 10 = 1.2s），不会因帧内丢步而让高速变慢 */
+          while (left > 1e-6 && guard++ < 40) {
+            var sub = Math.min(left, 0.05);
             stepTrain(tr, sub);
             left -= sub;
           }
@@ -2782,6 +2792,21 @@
       chk.__lst = '当前站=' + state.curId + ' here数=' + here.length + ' 高亮=' + (!!b && b.classList.contains('here'));
       return here.length === 1 && !!b && b.classList.contains('here');
     })(), chk.__lst);
+
+    chk('速度选项 = 1x/2x/5x/10x，且高倍速下子步不丢步、语音不叠读', (function () {
+      var btns = $('segSpeed').querySelectorAll('button');
+      var mults = [].slice.call(btns).map(function (b) { return Number(b.getAttribute('data-mult')); });
+      var want = [1, 2, 5, 10];
+      var same = mults.length === want.length && mults.every(function (v, i) { return v === want[i]; });
+      /* 10x 时单帧最大 0.12s × 10 = 1.2s，子步 0.05s 需 ≤ 24 步，留到 40 步够用 */
+      var enough = Math.ceil(0.12 * 10 / 0.05) <= 40;
+      var bak = ui.mult;
+      btns[mults.length - 1].click();                 // 点 10x
+      var clicked = ui.mult === 10;
+      ui.mult = bak;
+      chk.__spd = '按钮=' + mults.join('/') + ' 点10x后=' + clicked + ' 子步够用=' + enough;
+      return same && clicked && enough;
+    })(), chk.__spd);
 
     chk('渲染元素齐备（67 车站 / 67 标签 / 2 列车×8 车厢）',
       Object.keys(stationEls).length === 67 && labelEls.length === 67 &&
