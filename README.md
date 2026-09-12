@@ -363,41 +363,33 @@ SELFTEST-PASS checks 92 pass 92     (1024x768)
 SELFTEST-PASS checks 92 pass 92     (800x600)
 ```
 
-**线上地址同样跑一遍**（GitHub Pages，带 cache-buster；以下为本次发版的实际输出）：
+**线上地址同样跑一遍**（GitHub Pages，带 cache-buster；以下为最近一次发版的实际输出）：
 
 ```text
-# ① 等 Pages 构建完成，并核对版本戳的 commit = 那次功能提交
+# ① 等 Pages 构建完成，核对 version.json 的 commit = 那次功能提交
 $ gh api repos/nerored/chengdu-metro-line1/pages/builds/latest --jq '{status,commit}'
-{"status":"built","commit":"a8857a8821d374c25cc87ad57bfaf245f41504fa"}
-$ curl -s "https://nerored.github.io/chengdu-metro-line1/version.json?_v=$(date +%s)"
-{ "version": "2026-09-13.0134", "commit": "56eb3f1", "builtAt": "2026-09-13T01:34:50+08:00" }
-# 56eb3f1 = 补齐全网 17 条线路 + 新底图 那次功能提交
+{"status":"built","commit":"c32b4e8201360e3a205a1ccbbc425a7fc98ddb1e"}
+$ curl -s 'https://nerored.github.io/chengdu-metro-line1/version.json?cb=…'
+{ "version": "2026-09-13.0204", "commit": "791e01c", "builtAt": "2026-09-13T02:04:42+08:00" }
+# 791e01c = UI 重构那次功能提交（桌面 dock / 手机抽屉 / 4 个 tab / 站点搜索）
 
-# ② 带 cache-buster 跑三视口自检（下面就是线上返回的断言值）
-$ for S in 1400x900 1024x768 800x600; do
+# ② 三视口自检（窗口尺寸已按本机显示缩放补偿：窗口 = 目标 CSS 视口 + (30, 95)）
+$ for S in 1430x995 1054x863 830x695; do
     ALL=1 ./tools/headless-selftest.sh \
       "https://nerored.github.io/chengdu-metro-line1/index.html?selftest=1&_v=$(date +%s)" $S
   done
-SELFTEST-PASS checks 87 pass 87     线上 1400x900
-SELFTEST-PASS checks 87 pass 87     线上 1024x768
-SELFTEST-PASS checks 87 pass 87     线上 800x600
-  P 版本戳已从 version.json 读取（http 环境） | 2026-09-13.0134 · 56eb3f1
-  P 可见站名标签无明显重叠（最大遮挡 < 25%） | 可见 14 / 8 / 6 个标签（三个视口），最差 19.0% / 12.4% / 3.8%
-  P 底图覆盖远端新线（兰家沟 / 龙泉驿 / 天府机场 / 资阳 …） | 资阳北站 河湖1/路49 · 天府机场北 河湖1/路77 …
-
-# ③ 图标那次发版（version 2026-09-13.0136 / commit a060776）的线上核对
-$ curl -s "https://nerored.github.io/chengdu-metro-line1/icon-180.png?cb=$(date +%s%N)" -o /tmp/live-180.png
-$ sha256sum /tmp/live-180.png /home/nero/potato/icon-180.png
-f1b6e80679f4d8e8b051817357ab889f06186c3c25aefea5f505464605a600f8  /tmp/live-180.png
-f1b6e80679f4d8e8b051817357ab889f06186c3c25aefea5f505464605a600f8  /home/nero/potato/icon-180.png   # 一致
-$ sha256sum /tmp/live-icon-32.png /tmp/live-icon-512.png      # 同样一致：
-f46e9e3e… / 5080683e…
-$ git hash-object icon-180.png             → 0a6197c3faf20659ad789eb176b6b3b9c08618f1
-$ gh api repos/nerored/chengdu-metro-line1/contents/icon-180.png --jq .sha
-0a6197c3faf20659ad789eb176b6b3b9c08618f1   # git blob sha 与线上仓库一致
-$ ALL=1 ./tools/headless-selftest.sh "…index.html?selftest=1&_v=…" 1400x900
-SELFTEST-PASS checks 87 pass 87             # 图标发版后线上再跑一遍，仍然全绿
+SELFTEST-PASS checks 92 pass 92     线上 1400x900（窗口 1430x995）
+SELFTEST-PASS checks 92 pass 92     线上 1024x768（窗口 1054x863）
+SELFTEST-PASS checks 92 pass 92     线上 800x600（窗口 830x695）
+  P 版本戳已从 version.json 读取（http 环境） | 2026-09-13.0204 · 791e01c
+  P 可见站名标签无明显重叠（最大遮挡 < 25%） | 可见 20 / 6 / 4 个标签，最差 19.8% / 14.7% / 9.5%
+  P 触控目标 ≥44px（tab / 17 个线路色块 / 站点行 / HUD 按钮） | 全部 ≥44px
+  P 抽屉三档（peek/half/full）算得对，且收起时仍看得到把手与 tab | peek 可见 57 · half 460 · full 760（面板高 900）
+  P 站点搜索：搜得到（中/英）、结果可点、清空后回到按线折叠 | 中文命中 1 · 英文命中 1 · 恢复 18 组
 ```
+
+> 上一个发版（全网 17 条线路 + 新底图）的线上记录：`version 2026-09-13.0134` / `commit 56eb3f1`，
+> 同样三视口 87/87；图标那次是 `2026-09-13.0136` / `a060776`（`icon-180.png` 的线上 sha256 与本地一致）。
 
 > 注：`version.json` 的 `commit` 指向那次**功能提交**（`tools/bump-version.sh` 生成时取当前 HEAD，
 > 所以版本戳提交本身不会把自己写进去），不是 `HEAD` 本身。
