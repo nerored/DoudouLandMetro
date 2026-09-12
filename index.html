@@ -128,10 +128,13 @@
           <span class="muted" id="verText">版本读取中…</span>
         </div>
         <div class="row">
-          <button id="btnSound" class="btn" type="button" aria-pressed="false">🔇 声音关闭</button>
+          <button id="btnSound" class="btn btn-on" type="button" aria-pressed="true">🔊 声音开启</button>
         </div>
         <div class="verline">
-          <span class="muted">声音默认关（iOS 需用户手势才能播放）：开后会循环“地铁运行”环境声，并在开门/关门与报站时播语音。</span>
+          <span class="muted">声音<strong>默认开</strong>：受浏览器自动播放限制，第一次触摸页面后才真正出声（解锁）；点按钮可静音。到站/开门/关门/发车会朗读并显示字幕。</span>
+        </div>
+        <div class="verline">
+          <span id="ttsNote" class="tts-note"></span>
         </div>
         <div class="row">
           <div class="seg" id="segSpeed" role="group" aria-label="速度倍率">

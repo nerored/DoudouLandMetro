@@ -788,37 +788,7 @@
     });
   }
 
-  /* 跟随列车头部放置（放在车头上方；与到站气泡一起避让） */
-  function placeTrainPills(placed) {
-    trains.forEach(function (tr, ti) {
-      var b = pillEls[ti];
-      if (!b) return;
-      var route = ROUTES[tr.routeKey];
-      var sHead = kmToMap(route, tr.posKm);
-      var hp = pointAt(route, sHead);
-      var w = b.offsetWidth || 90, h = b.offsetHeight || 26;
-      var x = hp.x * view.k + view.tx - w / 2;
-      var y = hp.y * view.k + view.ty - (CFG.carHW * view.k + 16 + h) * 0.55;
-      x = clamp(x, 6, Math.max(6, stage.w - w - 6));
-      y = clamp(y, 6, Math.max(6, stage.h - h - 6));
-      if (placed) {
-        /* 注意：必须限定尝试次数 —— 如果气泡被舞台边缘钉住，“重新扫描”会变成死循环把页面卡死 */
-        var guard = 0;
-        for (var k = 0; k < placed.length && guard < 24; k++) {
-          var q = placed[k];
-          if (x < q.x + q.w + 4 && x + w + 4 > q.x && y < q.y + q.h + 4 && y + h + 4 > q.y) {
-            y = clamp(q.y - h - 5, 6, Math.max(6, stage.h - h - 6));
-            guard++;
-            k = -1;
-          }
-        }
-        placed.push({ x: x, y: y, w: w, h: h });
-      }
-      b.style.left = Math.round(x) + 'px';
-      b.style.top = Math.round(y) + 'px';
-    });
-  }
-
+  
   /* ==================================================== 下一站强调圈 + 到站气泡 */
   var markEls = [], bubbleLayer = null, bubbleWraps = {}, bubbleExpanded = {}, etaCache = [];
 
@@ -929,50 +899,76 @@
     }).join('|');
   }
 
-  /* 气泡定位：列车标签先占位，气泡避开它们、HUD 与彼此，始终留在舞台内 */
-  function positionBubbles() {
-    var hudBox = $('hud') ? $('hud').getBoundingClientRect() : null;
-    var hardBox = $('btnHardRefresh') ? $('btnHardRefresh').getBoundingClientRect() : null;
-    var stageBox = $('stage').getBoundingClientRect();
-    var placed = [];
-    placeTrainPills(placed);
-    function hits(box, x, y, w, h) {
-      if (!box) return false;
-      return !(x + w < box.left - stageBox.left || x > box.right - stageBox.left ||
-        y + h < box.top - stageBox.top || y > box.bottom - stageBox.top);
+  /* 地图上的 HTML 覆盖件（HUD/按钮/图例/比例尺/版本徽标/站点悬浮窗）占据的区域：
+     到站气泡与列车标签必须避让它们，宁可藏起来也不覆盖控制面板 */
+  function reservedBoxes() {
+    var out = [], sb = $('stage').getBoundingClientRect();
+    ['hud', 'btnHardRefresh', 'btnPanel', 'compass', 'legend', 'scalebar', 'verBadge', 'stpop'].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      var hidden = el.hidden || (el.classList && el.classList.contains('hide'));
+      if (hidden) return;
+      var r = el.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      out.push({ x: r.left - sb.left - 6, y: r.top - sb.top - 6, w: r.width + 12, h: r.height + 12 });
+    });
+    return out;
+  }
+  function hitsAny(boxes, x, y, w, h) {
+    for (var i = 0; i < boxes.length; i++) {
+      var q = boxes[i];
+      if (x < q.x + q.w && x + w > q.x && y < q.y + q.h && y + h > q.y) return true;
     }
+    return false;
+  }
+  /* 依次尝试几个候选位置；全都不行就隐藏（不覆盖控制面板） */
+  function placeAvoiding(el, cx, cy, w, h, boxes, placed) {
+    var maxY = Math.max(6, stage.h - h - 6), maxX = Math.max(6, stage.w - w - 6);
+    var cands = [
+      [cx - w / 2, cy - h - 16],      // 站/车上方
+      [cx - w / 2, cy + 18],          // 下方
+      [cx + 20, cy - h / 2],          // 右侧
+      [cx - w - 20, cy - h / 2],      // 左侧
+      [cx - w / 2, cy - h - 46],
+      [cx - w / 2, cy + 48]
+    ];
+    for (var i = 0; i < cands.length; i++) {
+      var x = clamp(cands[i][0], 6, maxX), y = clamp(cands[i][1], 6, maxY);
+      if (hitsAny(boxes, x, y, w, h)) continue;
+      var clash = false;
+      for (var k = 0; k < placed.length && !clash; k++) {
+        var q = placed[k];
+        if (x < q.x + q.w + 4 && x + w + 4 > q.x && y < q.y + q.h + 4 && y + h + 4 > q.y) clash = true;
+      }
+      if (clash) continue;
+      el.style.left = Math.round(x) + 'px';
+      el.style.top = Math.round(y) + 'px';
+      el.style.visibility = '';
+      placed.push({ x: x, y: y, w: w, h: h });
+      return true;
+    }
+    el.style.visibility = 'hidden';   // 实在没地方：藏起来，不动控制面板
+    return false;
+  }
+
+  /* 气泡与列车标签定位：都避开覆盖件与彼此 */
+  function positionBubbles() {
+    var res = reservedBoxes();
+    var placed = [];
+    /* 列车标签优先（它是“哪列车”的关键标识） */
+    trains.forEach(function (tr, ti) {
+      var b = pillEls[ti];
+      if (!b) return;
+      var route = ROUTES[tr.routeKey];
+      var hp = pointAt(route, kmToMap(route, tr.posKm));
+      placeAvoiding(b, hp.x * view.k + view.tx, hp.y * view.k + view.ty,
+        b.offsetWidth || 92, b.offsetHeight || 24, res, placed);
+    });
     Object.keys(bubbleWraps).forEach(function (sid) {
       var st = M.byId[sid], wrap = bubbleWraps[sid];
       if (!st || !wrap) return;
-      var w = wrap.offsetWidth || 120, h = wrap.offsetHeight || 30;
-      var cx = st.x * view.k + view.tx;
-      var cy = st.y * view.k + view.ty;
-      var x = clamp(cx - w / 2, 6, Math.max(6, stage.w - w - 6));
-      var y = cy - (10 * Math.max(0.7, Math.min(1.6, view.k)) + 14) - h;
-      /* 太靠近顶边或会被 HUD / 左上角刷新按钮盖住时，改放到站点下方 */
-      var inHud = hits(hudBox, x, y, w, h) || hits(hardBox, x, y, w, h);
-      if (y < 6 || inHud) {
-        var y2 = cy + 14;
-        if (hits(hudBox, x, y2, w, h) || hits(hardBox, x, y2, w, h)) {
-          var below = Math.max(hudBox ? hudBox.bottom - stageBox.top : 0, hardBox ? hardBox.bottom - stageBox.top : 0);
-          y2 = below + 6;
-        }
-        y = y2;
-      }
-      y = clamp(y, 6, Math.max(6, stage.h - h - 6));
-      /* 与已放置气泡避免重叠（限定尝试次数，否则“重启扫描”可能死循环） */
-      var guard = 0;
-      for (var k = 0; k < placed.length && guard < 24; k++) {
-        var q = placed[k];
-        if (x < q.x + q.w + 4 && x + w + 4 > q.x && y < q.y + q.h + 4 && y + h + 4 > q.y) {
-          y = clamp(q.y + q.h + 5, 6, Math.max(6, stage.h - h - 6));
-          guard++;
-          k = -1;
-        }
-      }
-      placed.push({ x: x, y: y, w: w, h: h });
-      wrap.style.left = Math.round(x) + 'px';
-      wrap.style.top = Math.round(y) + 'px';
+      placeAvoiding(wrap, st.x * view.k + view.tx, st.y * view.k + view.ty,
+        wrap.offsetWidth || 132, wrap.offsetHeight || 30, res, placed);
     });
   }
 
@@ -989,7 +985,6 @@
     $('selRoute').value = state.routeKey;
     if (ui.follow) followStep(0, true);
     closePopup();
-    if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
     updateHud();
     updateStationList();
     scrollListToActive();
@@ -1167,7 +1162,7 @@
       else if (st.phaseT < t3) { st.doorPhase = 'closing'; st.door = 1 - (st.phaseT - t2) / CFG.closeT; }
       else { st.doorPhase = 'closed'; st.door = 0; }
       /* 报站时机：开门（到站）→ 关门警报 → 发车（下一站） */
-      if (!st.aOpened) { st.aOpened = true; announce(st, 'arrive'); }
+      if (!st.aOpened) { st.aOpened = true; announce(st, 'open'); }
       if (st.phaseT >= t2 && !st.aClosing) { st.aClosing = true; announce(st, 'closing'); }
       if (st.phaseT >= t3 && !st.aDepart) { st.aDepart = true; announce(st, 'depart'); }
       if (st.phaseT >= t4) { st.door = 0; st.doorPhase = 'closed'; planNext(st); }
@@ -1789,7 +1784,6 @@
   function hardReload(nav) {
     var b = $('btnHardRefresh');
     if (b) { b.textContent = '⟳ 刷新中…'; b.classList.add('busy'); }
-    if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
     reloadFresh('正在强制刷新…', nav);
   }
 
@@ -1856,7 +1850,8 @@
      * iOS/Safari 要求音频必须由用户手势开启：先默认为静音，用户点「声音」按钮后才启动。 */
   var audio = {
     ctx: null, master: null, bgmGain: null, synth: null, fileEl: null, useFile: false,
-    on: false, vol: 0.6, announcements: 0
+    on: true,              // 默认声音开（受浏览器自动播放策略限制，第一次触摸页面后真正出声）
+    vol: 0.6, announcements: 0, ttsOK: false, ttsSilent: false, ttsError: null, pendingAt: 0
   };
 
   /* 想用真实录音当 BGM：把文件放进仓库（如 audio/bgm.mp3）并把下面这行改成 'audio/bgm.mp3'。
@@ -1962,26 +1957,86 @@
   }
 
   function speak(text, cancelPrev) {
+    /* 注意：绝对不要用 speechSynthesis.cancel() —— iOS/WebKit 上 cancel 之后后续 speak 会直接失效（"没声音"）
+       改为：正在说话就跳过这次播报，不改动队列。 */
+    void cancelPrev;
     if (!audio.on || !text || !('speechSynthesis' in window)) return;
     try {
       var ss = window.speechSynthesis;
-      if (cancelPrev) ss.cancel();
+      if (ss.speaking || ss.pending) return;
       var u = new SpeechSynthesisUtterance(text);
       u.lang = 'zh-CN';
       u.rate = 1.0;
       u.pitch = 1.0;
       var v = zhVoice();
       if (v) u.voice = v;
+      u.onstart = function () {
+        audio.ttsOK = true;
+        audio.ttsSilent = false;
+        updateTtsHint();
+      };
+      u.onerror = function (e) {
+        audio.ttsError = (e && e.error) || 'error';
+        updateTtsHint();
+      };
+      audio.pendingAt = Date.now();
       ss.speak(u);
       audio.announcements++;
+      /* 900ms 内没触发 onstart → 判定系统语音不可用，给用户一个明确提示 */
+      setTimeout(function () {
+        if (!audio.ttsOK && audio.on && audio.pendingAt && Date.now() - audio.pendingAt >= 850) {
+          audio.ttsSilent = true;
+          updateTtsHint();
+        }
+      }, 900);
     } catch (e) { void e; }
+  }
+
+  /* 第一次触摸页面时解锁音频（浏览器要求用户手势；iOS 上 TTS 也需在手势里首次调用） */
+  var audioUnlocked = false;
+  function unlockAudio() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    var ctx = initAudio();
+    if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
+    if (audio.on) {
+      bgmEnabled(true);
+      speak('语音报站已开启', true);
+    }
+    updateTtsHint();
+  }
+  function bindAudioUnlock() {
+    ['pointerdown', 'touchstart', 'keydown'].forEach(function (ev) {
+      document.addEventListener(ev, unlockAudio, { passive: true });
+    });
+    var b = $('btnSound');
+    if (b) {
+      b.textContent = audio.on ? '🔊 声音开启' : '🔇 声音关闭';
+      b.setAttribute('aria-pressed', audio.on ? 'true' : 'false');
+      b.classList.toggle('btn-on', audio.on);
+    }
+  }
+
+  /* 语音自检提示（面板里显示；iOS 主屏 standalone 不支持 TTS 时告知用户该怎么办） */
+  function updateTtsHint() {
+    var el = $('ttsNote');
+    if (!el) return;
+    if (!audio.on) { el.textContent = ''; el.className = 'tts-note'; return; }
+    if (audio.ttsOK) { el.textContent = '系统语音正常（到站/开门/关门/发车会朗读并显示字幕）'; el.className = 'tts-note ok'; return; }
+    if (audio.ttsSilent || audio.ttsError) {
+      el.textContent = '系统语音不可用（iOS 主屏模式常见）：以提示音 + 字幕代替；用 Safari 打开同地址即有语音';
+      el.className = 'tts-note warn';
+      return;
+    }
+    el.textContent = '语音待触发…';
   }
 
   /* 报站文案（纯函数，便于自检） */
   function announceText(kind, ctxObj) {
+    if (kind === 'open') return ctxObj.zh + '站到了，列车开门，请注意安全，请先下后上';
     if (kind === 'arrive') return ctxObj.zh + '站到了，请下车，注意列车与站台之间的空隙';
     if (kind === 'closing') return '车门即将关闭，请勿靠近车门';
-    if (kind === 'depart') return '欢迎乘坐成都地铁' + ctxObj.line + '，下一站 ' + ctxObj.next;
+    if (kind === 'depart') return '欢迎乘坐豆豆国地铁' + ctxObj.line + '号线，下一站 ' + ctxObj.next;
     return '';
   }
 
@@ -2004,13 +2059,14 @@
       next: after && M.byId[after] ? M.byId[after].zh : '',
       line: LINE_BY_KEY[r.lineKey].key
     };
-    var text = kind === 'arrive' ? announceText('arrive', ctxObj)
-      : kind === 'closing' ? announceText('closing', ctxObj)
-        : (after ? announceText('depart', ctxObj) : '欢迎乘坐成都地铁' + ctxObj.line + '，本次列车已到达终点站');
+    var text = kind === 'open' ? announceText('open', ctxObj)
+      : kind === 'arrive' ? announceText('arrive', ctxObj)
+        : kind === 'closing' ? announceText('closing', ctxObj)
+          : (after ? announceText('depart', ctxObj) : '欢迎乘坐豆豆国地铁' + ctxObj.line + '号线，本次列车已到达终点站');
     /* 字幕：不管能不能出声都显示报站内容（iOS 主屏 standalone 对 TTS 有限制时也有反馈） */
     showAnnounce(text);
     if (!audio.on) return;
-    if (kind === 'arrive') { chime('open'); speak(ui.mult >= 2 ? ctxObj.zh + '站' : text, true); }
+    if (kind === 'open' || kind === 'arrive') { chime('open'); speak(ui.mult >= 2 ? ctxObj.zh + '站' : text, true); }
     else if (kind === 'closing') { chime('warn'); speak(text, false); }
     else { chime('close'); speak(text, false); }
   }
@@ -2046,7 +2102,6 @@
       speak('声音已开启，欢迎乘坐豆豆国的地铁', true);
     } else {
       bgmEnabled(false);
-      if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
     }
   }
 
@@ -2189,6 +2244,8 @@
     buildTrainPills();
     bindControls();
     bindVersionUI();
+    bindAudioUnlock();
+    updateTtsHint();
     resize();
     fitView();
     /* 调试/截图用参数：?adv=秒数 预跑运行模拟, ?follow=1 跟随, ?k=缩放, ?door=1 开门状态 */
@@ -2248,7 +2305,6 @@
       if (document.hidden) {
         if (audio.fileEl && !audio.fileEl.paused) audio.fileEl.pause();
         if (audio.ctx && audio.ctx.state === 'running' && audio.ctx.suspend) audio.ctx.suspend();
-        if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
       } else if (audio.on) {
         if (audio.ctx && audio.ctx.state === 'suspended' && audio.ctx.resume) audio.ctx.resume();
         bgmEnabled(true);
@@ -2754,33 +2810,80 @@
       return Math.abs(t - 10) < 0.12;
     })(), chk.__dwell);
 
-    chk('声音：默认关闭（不违反自动播放策略）且开关按钮在面板层、≥44px', (function () {
+    chk('声音：默认开启（首次触摸页面解锁）+ 按钮在面板层、≥44px', (function () {
       var b = $('btnSound');
       var r = b ? b.getBoundingClientRect() : { width: 0, height: 0 };
       chk.__snd = 'text=' + (b ? b.textContent.trim() : '-') + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) +
-        ' on=' + audio.on;
-      return !!b && b.closest('#panel') !== null && r.height >= 44 && r.width >= 44 && audio.on === false;
+        ' on=' + audio.on + ' aria=' + (b ? b.getAttribute('aria-pressed') : '-');
+      return !!b && b.closest('#panel') !== null && r.height >= 44 && r.width >= 44 &&
+        audio.on === true && b.getAttribute('aria-pressed') === 'true';
     })(), chk.__snd);
 
-    chk('报站文案（到站/关门/发车）包含站名与关键提示', (function () {
-      var a = announceText('arrive', { zh: '文殊院', next: '骡马市', line: '1' });
-      var c = announceText('closing', { zh: '文殊院' });
-      var d = announceText('depart', { zh: '文殊院', next: '骡马市', line: '1' });
-      chk.__ann = a;
-      return a.indexOf('文殊院') >= 0 && a.indexOf('站到了') >= 0 && c.indexOf('车门即将关闭') >= 0 &&
-        d.indexOf('下一站') >= 0 && d.indexOf('骡马市') >= 0;
+    chk('报站文案：天府广场站到了/列车开门注意安全/关门/豆豆国地铁X号线+下一站', (function () {
+      var o = announceText('open', { zh: '天府广场', next: '骡马市', line: '1' });
+      var c = announceText('closing', { zh: '天府广场' });
+      var d = announceText('depart', { zh: '天府广场', next: '骡马市', line: '1' });
+      chk.__ann = o + ' ｜ ' + d;
+      return o.indexOf('天府广场') >= 0 && o.indexOf('站到了') >= 0 && o.indexOf('开门') >= 0 &&
+        o.indexOf('注意安全') >= 0 && c.indexOf('车门即将关闭') >= 0 &&
+        d.indexOf('豆豆国地铁1号线') >= 0 && d.indexOf('下一站') >= 0 && d.indexOf('骡马市') >= 0;
     })(), chk.__ann);
 
-    chk('开启声音：音频上下文与合成 BGM/铃音通道就绪，关闭后还原', (function () {
+    chk('报站不调用 speechSynthesis.cancel（iOS 上 cancel 会让后续语音全失声）', (function () {
+      var desc = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
+      var calls = { speak: 0, cancel: 0 }, bakOn = audio.on, saved = null;
+      var stub = {
+        speaking: false, pending: false,
+        getVoices: function () { return []; },
+        cancel: function () { calls.cancel++; },
+        speak: function (u) { calls.speak++; saved = u; }
+      };
+      try {
+        Object.defineProperty(window, 'speechSynthesis', { value: stub, configurable: true, writable: true });
+      } catch (e) { return true; }                     // 环境不允许覆盖就跳过这条
+      setSound(true);
+      calls.speak = 0; calls.cancel = 0;               // 只统计报站那一次
+      announce(state, 'open');
+      var txt = saved && saved.text ? String(saved.text) : '';
+      setSound(bakOn);
+      try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
+      chk.__tts = 'speak=' + calls.speak + ' cancel=' + calls.cancel + ' 文本=' + txt.slice(0, 20);
+      return calls.speak >= 1 && calls.cancel === 0 && /站到了/.test(txt);
+    })(), chk.__tts);
+
+    chk('气泡/列车标签不遮挡 HUD、按钮、图例、比例尺、版本徽标', (function () {
+      positionBubbles();
+      var res = reservedBoxes(), sb = $('stage').getBoundingClientRect(), bad = [];
+      var els = [].slice.call(document.querySelectorAll('#ntb .ntb-wrap'))
+        .concat([].slice.call(document.querySelectorAll('#trainpills .tp')));
+      els.forEach(function (el) {
+        if (el.style.visibility === 'hidden') return;      // 被藏起来的不算遮挡
+        var r = el.getBoundingClientRect();
+        if (!r.width) return;
+        var b = { x: r.left - sb.left, y: r.top - sb.top, w: r.width, h: r.height };
+        res.forEach(function (q) {
+          if (b.x < q.x + q.w && b.x + b.w > q.x && b.y < q.y + q.h && b.y + b.h > q.y) {
+            bad.push((el.textContent || '').slice(0, 8));
+          }
+        });
+      });
+      chk.__ov = els.length + ' 个气泡/标签，遮挡 ' + bad.length + (bad.length ? '：' + bad.join(',') : '');
+      return bad.length === 0;
+    })(), chk.__ov);
+
+    chk('声音开关可用：关→开能建音频上下文与合成 BGM/铃音通道，并能恢复', (function () {
       var hasAC = typeof (window.AudioContext || window.webkitAudioContext) === 'function';
       if (!hasAC) return true;                              // 环境不支持就跳过
+      var bak = audio.on;
+      setSound(false);
+      var offText = $('btnSound').textContent;
       setSound(true);
       var ok = audio.on === true && !!audio.ctx && !!audio.bgmGain && !!audio.synth &&
-        /开/.test($('btnSound').textContent);
-      setSound(false);
+        /开启/.test($('btnSound').textContent) && /关闭/.test(offText);
+      setSound(bak);
       chk.__aud = 'ctx=' + !!audio.ctx + ' synth=' + !!audio.synth + ' bgmGain=' + !!audio.bgmGain +
-        ' 已还原=' + (audio.on === false);
-      return ok && audio.on === false;
+        ' 已恢复=' + (audio.on === bak);
+      return ok && audio.on === bak;
     })(), chk.__aud);
 
     chk('列车强调显示：每列车有光晕 + 跟随标签（带线路与状态）', (function () {
@@ -3109,6 +3212,7 @@
     get versionInfo() { return BUILD_VERSION; }, get remoteVersion() { return REMOTE_VERSION; },
     audio: audio, setSound: setSound, initAudio: initAudio, announce: announce, announceText: announceText,
     chime: chime, speak: speak, nextStopAfter: nextStopAfter, showAnnounce: showAnnounce,
+    reservedBoxes: reservedBoxes, updateTtsHint: updateTtsHint, unlockAudio: unlockAudio,
     trainIndexForLine: trainIndexForLine, updateStationList: updateStationList, scrollListToActive: scrollListToActive
   };
 })();

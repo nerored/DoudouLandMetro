@@ -488,6 +488,10 @@ body {
 .stpop .btn-block { margin-top: 10px; }
 .stpop .btn[disabled] { opacity: .5; }
 
+.tts-note { display: block; margin-top: 4px; font-size: 11px; line-height: 1.35; color: var(--ink-soft); }
+.tts-note.ok { color: #1d6b3f; }
+.tts-note.warn { color: #8a5a08; }
+
 /* 报站字幕条（TTS 被系统限制时也能看到报站内容） */
 .announce {
   position: absolute;
