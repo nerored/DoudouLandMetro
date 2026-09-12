@@ -1,7 +1,7 @@
 {
-  "name": "豆豆国的地铁 · 成都地铁 1/2/3/4/5 号线示意",
+  "name": "豆豆国的地铁 · 成都地铁全网线路示意",
   "short_name": "豆豆国的地铁",
-  "description": "成都地铁 1/2/3/4/5 号线示意线路图与 8 车厢列车运行模拟（iPad 触屏）",
+  "description": "成都地铁 1~30 号线与市域铁路 S3 资阳线（17 条线路）示意线路图与 8 车厢列车运行模拟（iPad 触屏）",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

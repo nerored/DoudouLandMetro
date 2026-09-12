@@ -59,6 +59,17 @@ ORDER = ['1main', '1branch'] + [k for k in LINE_INFO if k != '1']
 LOOP_LINES = {'7'}                       # 环线：到终点绕回起点，不折返
 KIND = {'S3': '市域铁路'}                 # 非地铁线路的标注
 
+# OSM 上缺 name:en 的车站（少数新站只有中文名）→ 人工补齐英文名。
+# 命名风格跟官方一致：站名用拼音，道路用 “X Road / X Avenue”（对照 OSM 里已有的
+# 龙桥路 Longqiao Road、温泉大道 Wenquan Avenue、明光 Mingguang 等）。README 第 6 节标注为人工补录。
+EN_FALLBACK = {
+    '温家山': 'Wenjiashan',
+    '牧华路': 'Muhua Road',
+    '红莲': 'Honglian',
+    '蓝家店': 'Lanjiadian',
+    '黄忠': 'Huangzhong',
+}
+
 
 def line_key_of(svc):
     return SERVICE_LINE.get(svc, svc)
@@ -182,8 +193,12 @@ def legacy_meta():
 
 def main():
     only = None
-    if len(sys.argv) > 2 and sys.argv[1] == '--lines':
-        only = set(sys.argv[2].split(','))
+    shift_out = None
+    args = sys.argv[1:]
+    if '--lines' in args:
+        only = set(args[args.index('--lines') + 1].split(','))
+    if '--write-shift' in args:
+        shift_out = args[args.index('--write-shift') + 1]
     legacy = legacy_meta()
     print('   人工元数据（1/2 号线）：%d 站' % len(legacy))
 
@@ -263,6 +278,18 @@ def main():
     off_x = -min(allx) + MARGIN_UNITS
     off_y = -min(ally) + MARGIN_UNITS
 
+    # 底图（tools/build-basemap.py）必须落在与轨道同一套“投影 + 平移”里，
+    # 而平移量取决于**全部轨道的包围盒**，所以先把它写出来给底图生成器读。
+    if shift_out:
+        shift = {'offX': off_x, 'offY': off_y, 'margin': MARGIN_UNITS,
+                 'unitsPerKm': UNITS_PER_KM, 'lat0': LAT0, 'lon0': LON0,
+                 'tracks': {'xMin': min(allx), 'xMax': max(allx),
+                            'yMin': min(ally), 'yMax': max(ally)}}
+        with open(shift_out, 'w', encoding='utf-8') as f:
+            json.dump(shift, f, ensure_ascii=False, indent=2)
+        print('== 平移量写入 %s：off=(%.1f, %.1f) 轨道范围 x %.0f..%.0f y %.0f..%.0f'
+              % (shift_out, off_x, off_y, min(allx), max(allx), min(ally), max(ally)))
+
     def shift_xy(xy):
         return [[round(x + off_x, 1), round(y + off_y, 1)] for x, y in xy]
 
@@ -291,7 +318,7 @@ def main():
         rec = OrderedDict()
         rec['id'] = lm.get('id') or ('s%03d' % (len(st_out) + 1))
         rec['zh'] = nm
-        rec['en'] = st['en'] or lm.get('en', '')
+        rec['en'] = st['en'] or lm.get('en', '') or EN_FALLBACK.get(nm, '')
         rec['x'] = pos[0]
         rec['y'] = pos[1]
         rec['lat'] = round(st['lat'], 5)
@@ -330,6 +357,11 @@ def main():
         if lk in KIND:
             entry['kind'] = KIND[lk]
         seq = stops_of.get(svc, [])
+        # 环线的 OSM 关系把起点站同时列在首尾（崔家店 … 崔家店），其实是同一个站：
+        # 去掉末尾重复项——否则该站在站点列表/报站里出现两次，末站→首站那一段还会退化成
+        # 0.005 km 的“瞬移行程”（7 号线真实站数是 31 站，不是 32）。
+        if lk in LOOP_LINES and len(seq) > 2 and seq[0] == seq[-1]:
+            seq = seq[:-1]
         ids = []
         for nm in seq:
             for r in st_out:
@@ -362,7 +394,7 @@ def main():
             services[sv['key']] = sv
 
     payload = OrderedDict([
-        ('generated', 'tools/build-lines.py · 2026-09-12 · OpenStreetMap 线路关系 + 百度百科人工核对'),
+        ('generated', 'tools/build-lines.py · 2026-09-13 · OpenStreetMap 线路关系 + 百度百科人工核对（仅 1/2 号线）'),
         ('unitsPerKm', UNITS_PER_KM),
         ('lines', list(lines_out.values())),
         ('services', services),

@@ -1,12 +1,12 @@
 /* =============================================================================
- * app.js - 成都地铁 1 号线：示意线路图 + 3 车厢列车运行模拟
+ * app.js - 豆豆国的地铁（成都地铁全网）：示意线路图 + 8 车厢列车运行模拟
  * 纯 vanilla JS（无依赖、无构建）。依赖 data.js 暴露的 window.METRO。
  *
  * 主要模块：
  *   1. 路径采样（Catmull-Rom 平滑曲线 -> 弧长参数化，供列车沿线路行驶）
  *   2. 底图装饰（网格 / 街区 / 道路 / 河流 / 公园）
  *   3. 线路、车站、站名标签（防重叠）
- *   4. 3 车厢列车（按弧长排布，沿切线方向贴合线路）
+ *   4. 8 车厢列车（按弧长排布，沿切线方向贴合线路）
  *   5. 运行状态机（加速-巡航-制动-停站-开关门-折返-交路切换-目标站导航）
  *   6. 视图（Pointer Events 平移/捏合/双击，自适应缩放与边界约束）
  * ========================================================================== */
@@ -244,10 +244,20 @@
     }
     var route = {
       key: svc.key, label: svc.label, lineKey: svc.lineKey, color: svc.color,
-      loop: isLoop,
+      loop: isLoop, ccw: false,
       samples: samples, cum: cum, length: cum[cum.length - 1],
       ids: [], mapAt: [], kmAt: [], projErr: 0
     };
+    /* 环线的绕行方向：成都地铁的环线用「内环/外环」而不是「上行/下行」报方向，
+       官方口径是 **内环 = 顺时针、外环 = 逆时针**（四川新闻网 2017-12-06《成都地铁7号线：首推“内/外环”新概念》）。
+       坐标是 y 向下的投影（y 变大 = 往南），所以“地理逆时针”对应带符号面积为负。 */
+    if (isLoop) {
+      var area2 = 0;
+      for (i = 1; i < samples.length; i++) {
+        area2 += samples[i - 1].x * samples[i].y - samples[i].x * samples[i - 1].y;
+      }
+      route.ccw = area2 < 0;
+    }
     (svc.stationIds || []).forEach(function (id) {
       var st = M.byId[id];
       if (!st) return;
@@ -262,7 +272,8 @@
     for (var q = 1; q < route.kmAt.length; q++) {
       if (!(route.kmAt[q] > route.kmAt[q - 1])) route.kmAt[q] = route.kmAt[q - 1] + 0.005;
     }
-    route.kmLength = route.kmAt[route.kmAt.length - 1];
+    /* 环线的一圈里程 = 轨道全长（不是“到末站”的里程：末站到首站还有一段闭合腿） */
+    route.kmLength = isLoop ? route.length / M.unitsPerKm : route.kmAt[route.kmAt.length - 1];
     route.terminus = route.ids[route.ids.length - 1];
     route.origin = route.ids[0];
     return route;
@@ -333,6 +344,14 @@
   function kmToMap(route, km) {
     var a = route.kmAt, m = route.mapAt;
     km = clamp(km, 0, route.kmLength);
+    /* 环线：末站之后还有一段“闭合腿”（末站 → 首站），虚拟补上终点做插值——
+       否则最后 0.7 km 会被 clamp 钉在末站，看着就是“列车停在双店路不走”。 */
+    if (route.loop && a.length > 1 && km > a[a.length - 1]) {
+      var aN = a[a.length - 1];
+      var aE = route.kmLength + a[0];
+      var t = (km - aN) / Math.max(1e-9, aE - aN);
+      return m[m.length - 1] + ((m[0] + route.length) - m[m.length - 1]) * t;
+    }
     var lo = 0, hi = a.length - 1;
     while (lo < hi - 1) { var mid = (lo + hi) >> 1; if (a[mid] <= km) lo = mid; else hi = mid; }
     var span = a[hi] - a[lo] || 1;
@@ -395,32 +414,51 @@
       svg('line', { class: 'bg-grid', x1: f1(MAPBOX.x), y1: f1(i), x2: f1(MAPBOX.x + MAPBOX.w), y2: f1(i) }, grid);
     }
 
-    /* 道路：OSM motorway / trunk / primary（装饰层，只求城市骨架观感） */
+    /* 道路：OSM motorway / trunk / primary（装饰层，只求城市骨架观感）
+       线路扩到全网后道路段上万条，逐段建 DOM 会撑爆渲染（一段两个 path）：
+       改为**按等级合并成 3 条 path**（每级两条 = 描边 + 主色），DOM 从 1.3 万节点降到 6 个，
+       视觉完全一致（同一套 fill-rule / stroke-linecap）。 */
     var roads = svg('g', { id: 'roads' }, g);
     var RW = { motorway: 7, trunk: 5.5, primary: 4 };
-    (M.roads || []).forEach(function (rd) {
-      if (!rd.pts || rd.pts.length < 2) return;
-      var d = 'M' + rd.pts.map(function (p) { return f1(p[0]) + ' ' + f1(p[1]); }).join('L');
-      var w = RW[rd.c] || 4.5;
-      svg('path', { class: 'bg-road-casing', d: d, 'stroke-width': w + 2.6 }, roads);
-      svg('path', { class: 'bg-road', d: d, 'stroke-width': w }, roads);
-    });
+    (function () {
+      var byCls = {};
+      (M.roads || []).forEach(function (rd) {
+        if (!rd.pts || rd.pts.length < 2) return;
+        var d = 'M' + rd.pts.map(function (p) { return f1(p[0]) + ' ' + f1(p[1]); }).join('L');
+        (byCls[rd.c] = byCls[rd.c] || []).push(d);
+      });
+      Object.keys(byCls).forEach(function (cls) {
+        var d = byCls[cls].join('');
+        var w = RW[cls] || 4.5;
+        svg('path', { class: 'bg-road-casing', d: d, 'stroke-width': w + 2.6 }, roads);
+        svg('path', { class: 'bg-road', d: d, 'stroke-width': w }, roads);
+      });
+    })();
 
-    /* 河流（OSM waterway）：锦江/府河/南河画粗一点 */
+    /* 河流（OSM waterway）：锦江/府河/南河画粗一点；同样按粗细合并成 2 条 path */
     var water = svg('g', { id: 'water' }, g);
-    (M.water && M.water.rivers ? M.water.rivers : []).forEach(function (rv) {
-      if (!rv.pts || rv.pts.length < 2) return;
-      var d = 'M' + rv.pts.map(function (p) { return f1(p[0]) + ' ' + f1(p[1]); }).join('L');
-      var big = /锦江|府河|南河/.test(rv.name);
-      var path = svg('path', { class: 'bg-water', d: d }, water);
-      path.style.strokeWidth = (big ? 22 : 11) + 'px';
-    });
-    /* 湖泊（OSM natural=water 多边形） */
-    (M.water && M.water.lakes ? M.water.lakes : []).forEach(function (lk) {
-      if (!lk.pts || lk.pts.length < 3) return;
-      var d = 'M' + lk.pts.map(function (p) { return f1(p[0]) + ' ' + f1(p[1]); }).join('L') + 'Z';
-      svg('path', { class: 'bg-lake', d: d }, water);
-    });
+    (function () {
+      var big = [], small = [];
+      (M.water && M.water.rivers ? M.water.rivers : []).forEach(function (rv) {
+        if (!rv.pts || rv.pts.length < 2) return;
+        var d = 'M' + rv.pts.map(function (p) { return f1(p[0]) + ' ' + f1(p[1]); }).join('L');
+        (/锦江|府河|南河/.test(rv.name) ? big : small).push(d);
+      });
+      [[big, 22], [small, 11]].forEach(function (pair) {
+        if (!pair[0].length) return;
+        var p = svg('path', { class: 'bg-water', d: pair[0].join('') }, water);
+        p.style.strokeWidth = pair[1] + 'px';
+      });
+    })();
+    /* 湖泊（OSM natural=water 多边形）：也合成一条 path */
+    (function () {
+      var ds = [];
+      (M.water && M.water.lakes ? M.water.lakes : []).forEach(function (lk) {
+        if (!lk.pts || lk.pts.length < 3) return;
+        ds.push('M' + lk.pts.map(function (p) { return f1(p[0]) + ' ' + f1(p[1]); }).join('L') + 'Z');
+      });
+      if (ds.length) svg('path', { class: 'bg-lake', d: ds.join('') }, water);
+    })();
 
     /* 水系注记：取几何代表点，河流沿切线方向旋转 */
     var wlab = svg('g', null, g);
@@ -731,7 +769,7 @@
   /* ============================================================= 4. 列车 */
   var trainGroups = [];
 
-  /* 每列车一个 group（3 节车厢）；色带颜色由 group 上的 --line 决定 */
+  /* 每列车一个 group（8 节车厢）；色带颜色由 group 上的 --line 决定 */
   function buildTrains() {
     var wrap = svg('g', { id: 'trains' }, world);
     trains.forEach(function (tr, ti) {
@@ -833,7 +871,8 @@
     });
   }
 
-  /* 点到哪列车（车头/车厢中点 30px 内） */
+  /* 点到哪列车（车头/车厢中点 30px 内）；命中距离记在 hitTrainDist，供“站优先还是车优先”比较 */
+  var hitTrainDist = Infinity;
   function hitTrain(p) {
     var best = -1, bestD = 30;
     trains.forEach(function (tr, ti) {
@@ -845,6 +884,7 @@
         if (d < bestD) { bestD = d; best = ti; }
       }
     });
+    hitTrainDist = best < 0 ? Infinity : bestD;
     return best;
   }
 
@@ -856,6 +896,11 @@
     if (i < 0) return r.ids[0];
     if (tr.phase === 'run') return r.ids[tr.nextIdx];
     var j = i + tr.dir;
+    if (r.loop) {                     // 环线：首尾相接，末站的下一站就是首站
+      if (j < 0) j = r.ids.length - 1;
+      if (j >= r.ids.length) j = 0;
+      return r.ids[j];
+    }
     if (j < 0 || j >= r.ids.length) return tr.curId;
     return r.ids[j];
   }
@@ -1084,7 +1129,9 @@
         if (ui.showLines[l.key]) delete ui.showLines[l.key];
         else ui.showLines[l.key] = true;
         applyLineFilter();
-        toast(Object.keys(ui.showLines).length ? '只看：' + Object.keys(ui.showLines).join('、') + ' 号线' : '已显示全部线路');
+        toast(Object.keys(ui.showLines).length
+          ? '只看：' + Object.keys(ui.showLines).map(lineShort).join('、')
+          : '已显示全部线路');
       });
       box.appendChild(b);
     });
@@ -1191,6 +1238,28 @@
   function idxOf(id) { return routeIds(state.routeKey).indexOf(id); }
   function terminusId() { return ROUTES[state.routeKey].terminus; }
   function lineOf(routeKey) { return LINE_BY_KEY[ROUTES[routeKey].lineKey]; }
+  /* 线路短名：1~30 号线就是「N 号线」，S3 是「市域铁路 S3 资阳线」（不能拿 key 硬拼“S3号线”） */
+  function lineShort(key) {
+    return LINE_BY_KEY[key] ? LINE_BY_KEY[key].short : key;
+  }
+
+  /* 方向文案：普通线路“上行/下行”，环线用“内环/外环”
+     （内环 = 顺时针、外环 = 逆时针；ccw 是该交路“正向”在地理上的绕行方向） */
+  function dirName(route, dir) {
+    if (!route.loop) return dir > 0 ? '下行' : '上行';
+    var cw = dir > 0 ? !route.ccw : route.ccw;
+    return cw ? '内环' : '外环';
+  }
+  /* 环线没有终点可“往”，改成报“下一站”；普通线路仍报终点 */
+  function boundText(st) {
+    var route = ROUTES[st.routeKey];
+    if (route.loop) {
+      /* 用 nextStopOf 而不是 ids[nextIdx]：停站时 nextIdx 还指着本车所在的站 */
+      var nx = nextStopOf(st);
+      return nx && M.byId[nx] ? '下一站' + M.byId[nx].zh : '环行';
+    }
+    return '往' + M.byId[terminusId()].zh;
+  }
 
   /* 切换交路（不重置列车位置：旧位置仍在新交路上就保位置，否则退到分叉站） */
   function switchService(key, quiet) {
@@ -1385,7 +1454,11 @@
     }
     /* run */
     var route = ROUTES[st.routeKey];
-    var tKm = route.kmAt[st.nextIdx];
+    /* 环线绕回起点的那一段（末站 → 首站）是真实的闭合腿，必须把终点算成跑完一圈的里程，
+       否则 tKm 落到 0（< 当前里程）会被判成“已到达”，表现是列车从末站瞬移回首站。
+       注意单位：st.posKm 是 km，route.kmLength 也是 km（不能用 route.length，那是地图单位）。 */
+    var tKm = (route.loop && st.dir > 0 && st.nextIdx === 0 && st.posKm > route.kmLength / 2)
+      ? route.kmLength : route.kmAt[st.nextIdx];
     var remain = Math.abs(tKm - st.posKm);
     var brakeKm = (st.v / 3.6) * (st.v / 3.6) / (2 * CFG.decel * 1000);
     if (remain <= brakeKm + 1e-9) {
@@ -1654,21 +1727,24 @@
     handleTap(pos);
   }
 
-  /* 轻点：先判列车 → 再判站点 → 都没命中则收起气泡/关闭悬浮窗 */
+  /* 轻点：站点优先于列车——列车每站要停 10 s，停站时车身就盖在站台上，
+     若让列车优先，那 10 秒里点站会“没反应”（用户报过“站点点不动”）。
+     只有列车明显更近（距站点圆心比距车厢中心还近）时才判成点车。 */
   function handleTap(pos) {
     lastTapHandled = performance.now();
-    var ti = hitTrain(pos);
+    var ti = hitTrain(pos), td = hitTrainDist;
+    var hit = hitStation(pos), sd = hitStationD;
+    if (hit && (ti < 0 || sd <= td)) { openPopup(hit, pos); return; }
     if (ti >= 0) {
       if (ti !== activeIdx) { setActive(ti); activateSideEffects(); }
       else { toast('当前已是这列车：' + LINE_BY_KEY[ROUTES[state.routeKey].lineKey].short); }
       return;
     }
-    var hit = hitStation(pos);
-    if (hit) { openPopup(hit, pos); return; }
     collapseBubbles();
     closePopup();
   }
 
+  var hitStationD = Infinity;      // 最近一次 hitStation 的命中距离（px）
   function hitStation(p) {
     var best = null, bestD = CFG.tapRadius;
     M.stations.forEach(function (st) {
@@ -1676,6 +1752,7 @@
       var d = Math.hypot(sx - p.x, sy - p.y);
       if (d < bestD) { bestD = d; best = st.id; }
     });
+    hitStationD = best ? bestD : Infinity;
     return best;
   }
 
@@ -1734,7 +1811,7 @@
 
   function updateHud() {
     var route = ROUTES[state.routeKey];
-    setText('hudDir', '往' + M.byId[terminusId()].zh + ' · ' + (state.dir > 0 ? '下行' : '上行') + ' · ' + lineOf(state.routeKey).short);
+    setText('hudDir', boundText(state) + ' · ' + dirName(route, state.dir) + ' · ' + lineOf(state.routeKey).short);
     var doorEl = $('hudDoor');
     var doorTxt, doorCls;
     if (state.phase === 'dwell' && state.doorPhase === 'opening') { doorTxt = '开门中'; doorCls = 'opening'; }
@@ -1748,7 +1825,7 @@
     }
     setText('hudPhase', phaseLabel());
     setText('hudCur', (state.curId ? M.byId[state.curId].zh : '—') + ' 站');
-    var nx = route.ids[state.nextIdx];
+    var nx = nextStopOf(state);
     setText('hudNext', state.phase === 'reverse' ? '折返换向' : (nx ? M.byId[nx].zh + ' 站' : '—'));
     setText('hudTarget', state.target ? M.byId[state.target].zh + ' 站' : '—');
     setText('hudOdo', state.odometer.toFixed(2) + ' km');
@@ -2285,7 +2362,10 @@
     if (kind === 'open') return ctxObj.zh + '站到了，列车开门，请注意安全，请先下后上';
     if (kind === 'arrive') return ctxObj.zh + '站到了，请下车，注意列车与站台之间的空隙';
     if (kind === 'closing') return '车门即将关闭，请勿靠近车门';
-    if (kind === 'depart') return '欢迎乘坐豆豆国地铁' + ctxObj.line + '号线，下一站 ' + ctxObj.next;
+    if (kind === 'depart') {
+      var tag = ctxObj.loop ? '地铁' + ctxObj.line + '号线' + ctxObj.loopDir + '列车' : '地铁' + ctxObj.line + '号线';
+      return '欢迎乘坐豆豆国' + tag + '，下一站 ' + ctxObj.next;
+    }
     return '';
   }
 
@@ -2293,8 +2373,14 @@
   function nextStopAfter(tr) {
     var r = ROUTES[tr.routeKey];
     var i = r.ids.indexOf(tr.curId);
-    var j = i + tr.dir;
     if (i < 0) return null;
+    var j = i + tr.dir;
+    if (r.loop) {
+      /* 环线：首尾相接，末站的下一站就是首站（不是终点） */
+      if (j < 0) j = r.ids.length - 1;
+      if (j >= r.ids.length) j = 0;
+      return r.ids[j];
+    }
     if (j < 0 || j >= r.ids.length) return null;      // 已在端点，即将折返
     return r.ids[j];
   }
@@ -2306,7 +2392,9 @@
     var ctxObj = {
       zh: M.byId[st.curId] ? M.byId[st.curId].zh : '',
       next: after && M.byId[after] ? M.byId[after].zh : '',
-      line: LINE_BY_KEY[r.lineKey].key
+      line: LINE_BY_KEY[r.lineKey].key,
+      loop: !!r.loop,
+      loopDir: r.loop ? dirName(r, st.dir) : ''
     };
     var text = kind === 'open' ? announceText('open', ctxObj)
       : kind === 'arrive' ? announceText('arrive', ctxObj)
@@ -2368,12 +2456,12 @@
     selected = id;
     var key = (st.lines && st.lines[0]) || '1';
     setChipLine($('spLine'), key);
-    $('spLine').textContent = (st.lines && st.lines.length ? st.lines.join('·') : '1') + '号线';
+    $('spLine').textContent = (st.lines && st.lines.length ? st.lines.map(lineShort).join('·') : '1号线');
     $('spZh').textContent = st.zh;
     $('spEn').textContent = st.en || '';
     var tr = (st.lines && st.lines.length > 1)
       ? (st.lines.join('/') + ' 号线换乘')
-      : ((st.tr && st.tr.length) ? (st.tr.join('、') + ' 号线') : '无');
+      : ((st.tr && st.tr.length) ? (st.tr.map(function (k) { return k + ' 号线'; }).join('、')) : '无');
     if (st.planned && st.planned.length) tr += '（在建：' + st.planned.join('、') + '）';
     $('spTr').textContent = tr;
     $('spKm').textContent = stationKm(id).toFixed(2) + ' km' + (st.status && st.status !== '运营中' ? ' · ' + st.status : '');
@@ -2737,19 +2825,58 @@
       '牛王庙', '牛市口', '东大路', '塔子山公园', '成都东客站', '成渝立交', '惠王陵', '洪河', '成都行政学院',
       '龙泉驿火车站', '大面铺', '连山坡', '界牌', '书房', '龙平路', '龙泉驿'];
     function zh(key) { return ROUTES[key].ids.map(function (id) { return M.byId[id].zh; }); }
-    var expectCounts = { '1': 33, '2': 32, '3': 37, '4': 30, '5': 41, '6': 56, '7': 32 };
+    var expectCounts = { '1': 33, '2': 32, '3': 37, '4': 30, '5': 41, '6': 56, '7': 31,
+      '8': 32, '9': 13, '10': 18, '13': 21, '17': 21, '18': 13, '19': 23, '27': 22, '30': 24, 'S3': 6 };
     var loopSvc = Object.keys(ROUTES).filter(function (k) { return ROUTES[k].loop; });
-    chk('环线（7 号线）：标记 loop、里程从首发站起算、首末站同名',
+    chk('环线（7 号线）：标记 loop、里程从首发站起算、环上每站只出现一次',
       loopSvc.length === 0 || (ROUTES[loopSvc[0]].kmAt[0] < 0.6 &&
         ROUTES[loopSvc[0]].label.indexOf('↔') > 0 &&
-        M.byId[ROUTES[loopSvc[0]].ids[0]].zh === M.byId[ROUTES[loopSvc[0]].ids[ROUTES[loopSvc[0]].ids.length - 1]].zh),
+        ROUTES[loopSvc[0]].ids.length === 31 &&
+        (function () { var seen = {}; return ROUTES[loopSvc[0]].ids.every(function (id) { if (seen[id]) return false; seen[id] = 1; return true; }); })() &&
+        ROUTES[loopSvc[0]].ids[0] !== ROUTES[loopSvc[0]].ids[ROUTES[loopSvc[0]].ids.length - 1] &&
+        M.byId[ROUTES[loopSvc[0]].ids[0]].zh === ROUTES[loopSvc[0]].label.split(' ↔ ')[0]),
       loopSvc.length ? (ROUTES[loopSvc[0]].label + ' km0=' + f2(ROUTES[loopSvc[0]].kmAt[0]) +
-        ' 首/末=' + M.byId[ROUTES[loopSvc[0]].ids[0]].zh + '/' +
-        M.byId[ROUTES[loopSvc[0]].ids[ROUTES[loopSvc[0]].ids.length - 1]].zh)
-        : '当前数据无环线');
+        ' 站数=' + ROUTES[loopSvc[0]].ids.length + ' 首站=' + M.byId[ROUTES[loopSvc[0]].ids[0]].zh) : '当前数据无环线');
+
+    /* 环线绕一圈：不折返、末站到首站的闭合腿真的跑完（旧版在这里瞬移回起点） */
+    chk('环线跑满一圈回到首站：不折返、里程 = 轨道全长（含闭合腿）', (function () {
+      if (!loopSvc.length) return true;
+      var key = loopSvc[0], r = ROUTES[key];
+      var s = newTrain(key);
+      var t = 0, flipped = false, maxPos = 0, left = false, back = false;
+      while (t < 400000 && !back) {
+        stepTrain(s, 0.5); t += 0.5;
+        if (s.dir !== 1) flipped = true;
+        if (s.posKm > maxPos) maxPos = s.posKm;
+        if (s.curId !== r.ids[0]) left = true;
+        if (left && s.curId === r.ids[0] && s.phase === 'dwell') back = true;
+      }
+      var odoKm = s.odometer;
+      var reachEnd = maxPos > r.kmLength * 0.985;
+      chk.__lap = '回到首站=' + back + ' 里程=' + f2(odoKm) + ' km / 一圈 ' + f2(r.kmLength) +
+        ' km 方向翻转=' + flipped + ' 最远 s=' + f2(maxPos) + '/' + f2(r.kmLength) + ' 用时 ' + f2(t) + 's';
+      return back && !flipped && reachEnd && Math.abs(odoKm - r.kmLength) < 0.6;
+    })(), chk.__lap);
+
+    /* 环线方向文案：成都地铁官方口径「内环 = 顺时针、外环 = 逆时针」 */
+    chk('环线方向文案用「内环/外环」且与绕行方向对应；HUD/报站也带上它', (function () {
+      if (!loopSvc.length) return true;
+      var r = ROUTES[loopSvc[0]];
+      var fwd = dirName(r, 1), back = dirName(r, -1);
+      var hud = boundText({ routeKey: r.key, nextIdx: 1, dir: 1 });
+      var line = LINE_BY_KEY[r.lineKey].key;
+      var speak = announceText('depart', {
+        zh: '', next: '二仙桥', line: line, loop: true, loopDir: fwd
+      });
+      chk.__loopdir = '正向=' + fwd + ' 反向=' + back + ' 数据绕行=' + (r.ccw ? '逆时针' : '顺时针') +
+        ' HUD=' + hud + ' 报站=' + speak;
+      return (fwd === '内环' || fwd === '外环') && (back === '内环' || back === '外环') && fwd !== back &&
+        /^下一站/.test(hud) && speak.indexOf(fwd) >= 0 && /豆豆国地铁/.test(speak);
+    })(), chk.__loopdir);
 
     var cntOk = M.lines.every(function (l) { var e = expectCounts[l.key]; return e === undefined || l.services[0].stationIds.length >= e - 1; });
-    chk('每线路站数接近 OSM 关系站点数（1:33 2:32 3:37 4:30 5:41 6:56 7:32）', cntOk && M.stations.length >= 60,
+    chk('每线路站数接近 OSM 关系站点数（1:33 2:32 3:37 4:30 5:41 6:56 7:31 8:32 9:13 10:18 13:21 17:21 18:13 19:23 27:22 30:24 S3:6）',
+      cntOk && M.lines.length >= 17 && M.stations.length >= 300,
       '共 ' + M.stations.length + ' 站 · ' + M.lines.length + ' 条线路');
     chk('站名无重复', new Set(names).size === names.length);
     chk('1 号线主线顺序 = 官方列表（韦家碾→科学城）', zh('1main').join(',') === expectL1.join(','), zh('1main').length);
@@ -3086,6 +3213,62 @@
       return here.length >= 1 && !!b && b.classList.contains('here');
     })(), chk.__lst);
 
+    chk('站点列表按线路分组（每线一组、只展开当前列车所在线路、组内站数正确）', (function () {
+      var cur = ROUTES[state.routeKey].lineKey;
+      openGroupForLine(cur);
+      var line = M.lines.filter(function (l) { return l.key === cur; })[0];
+      var open = groupEls.filter(function (g) { return g.wrap.classList.contains('open'); });
+      var okOpen = open.length === line.services.length && open.every(function (g) { return g.line === cur; });
+      var okCount = groupEls.every(function (g) {
+        var n = g.body.querySelectorAll('button[data-st]').length;
+        return n > 0 && n <= ROUTES[g.svc].ids.length;
+      });
+      chk.__fold2 = groupEls.length + ' 组（期望 ' + ROUTE_KEYS.length + '）/ 展开 ' + open.length +
+        ' 组（当前线路 ' + cur + ' 有 ' + line.services.length + ' 个交路）/ 组内站数正常=' + okCount;
+      return groupEls.length === ROUTE_KEYS.length && okOpen && okCount;
+    })(), chk.__fold2);
+
+    chk('视口裁剪：放大到局部后大部分站名标签不参与排布（不被远处站拖慢/拖脏）', (function () {
+      var bak = { k: view.k, tx: view.tx, ty: view.ty };
+      zoomAt(0, 0, 1e6);
+      clampView(); applyView(); updateLabelScale();
+      var total = labelEls.length, off = 0;
+      labelEls.forEach(function (L) { if (L.g.classList.contains('offscreen')) off++; });
+      var shown = labelBoxes.length;
+      view.k = bak.k; view.tx = bak.tx; view.ty = bak.ty;
+      clampView(); applyView(); updateLabelScale();
+      chk.__cull = '放大到局部：站名标签共 ' + total + ' 个，屏幕外 ' + off + ' 个，参与排布 ' + shown + ' 个';
+      return total > 300 && off > total * 0.5 && shown < total * 0.5;
+    })(), chk.__cull);
+
+    /* 底图覆盖：远端新线附近必须有水系与道路（否则就是“底图没扩到”的回归） */
+    chk('底图覆盖远端新线（兰家沟 / 龙泉驿 / 天府机场 / 资阳 等附近都有水系与道路）', (function () {
+      var want = ['兰家沟', '龙泉驿', '天府机场北', '资阳北站', '西河', '龙安', '高洪', '花桥', '新平'];
+      var box = 160;                       // 地图单位（1 km = unitsPerKm → 160 单位 ≈ 3.2 km）
+      var res = [], ok = true;
+      var waters = (M.water && M.water.rivers ? M.water.rivers : []).concat(M.water && M.water.lakes ? M.water.lakes : []);
+      var roads = M.roads || [];
+      want.forEach(function (zh) {
+        var st = M.stations.filter(function (s) { return s.zh === zh; })[0];
+        if (!st) { res.push(zh + '(无此站)'); ok = false; return; }
+        var nw = 0, nr = 0, i;
+        waters.forEach(function (f) {
+          for (i = 0; i < f.pts.length; i++) {
+            if (Math.abs(f.pts[i][0] - st.x) < box && Math.abs(f.pts[i][1] - st.y) < box) { nw++; break; }
+          }
+        });
+        roads.forEach(function (rd) {
+          for (i = 0; i < rd.pts.length; i++) {
+            if (Math.abs(rd.pts[i][0] - st.x) < box && Math.abs(rd.pts[i][1] - st.y) < box) { nr++; break; }
+          }
+        });
+        if (!nw || !nr) ok = false;
+        res.push(zh + ' 河湖' + nw + '/路' + nr);
+      });
+      chk.__cover = res.join(' · ');
+      return ok;
+    })(), chk.__cover);
+
     chk('时间流逝比例：基础 1:2（现实 1s = 游戏 2s），倍速再乘', (function () {
       var bak = ui.mult;
       ui.mult = 1; var r1 = timeRatio();
@@ -3415,23 +3598,44 @@
           })(), 'x=' + f2(view.tx));
           fitView();
           setFollow(false);
-          /* 长按（手指停留超过 tapMs）也要能选站，且不能误触发缩放 */
-          var st2 = M.byId.huochenanzhan;
-          var sp2 = { x: st2.x * view.k + view.tx, y: st2.y * view.k + view.ty };
+          /* 长按（手指停留超过 tapMs）也要能选站，且不能误触发缩放。
+             线路变多后整网适配得更远，屏幕中央往往正好被 HUD/图例/悬浮窗盖住，
+             所以先挑一个“屏幕位置没被 HTML 覆盖件挡住”的站点（优先当前交路上的站，
+             这样派车测试不会顺手切到别的列车）——测的是手势，不是遮挡。 */
           setTarget(null);
           closePopup();
+          var pick = (function () {
+            var cand = ROUTES['1main'].ids.concat(M.stations.map(function (s3) { return s3.id; }));
+            for (var i = 0; i < cand.length; i++) {
+              var s3 = M.byId[cand[i]];
+              if (!s3) continue;
+              var x = s3.x * view.k + view.tx, y = s3.y * view.k + view.ty;
+              if (x < 36 || y < 36 || x > stage.w - 36 || y > stage.h - 36) continue;
+              var el = document.elementFromPoint(x, y);
+              if (!el || !el.closest || !el.closest('#stage')) continue;
+              if (el.closest('#hud') || el.closest('#legend') || el.closest('#stpop') ||
+                  el.closest('#scalebar') || el.closest('#compass')) continue;
+              return { st: s3, x: x, y: y };
+            }
+            return null;
+          })();
+          chk('地图上存在未被 HUD/图例遮挡的站点（手势测试的前提）', !!pick,
+            pick ? pick.st.zh + '@' + Math.round(pick.x) + ',' + Math.round(pick.y) + ' k=' + f2(view.k)
+              : '整网适配后没有可用落点 k=' + f2(view.k));
+          var sp2 = { x: pick ? pick.x : stage.w / 2, y: pick ? pick.y : stage.h / 2 };
+          var pickId = pick ? pick.st.id : '';
           var kBeforeLong = view.k;
           pe('pointerdown', sp2.x, sp2.y, 41);
           setTimeout(function () {
             pe('pointerup', sp2.x, sp2.y, 41);
             setTimeout(function () {
-              chk('长按（停留 > tapMs）也能选中站点', popupId === 'huochenanzhan' && Math.abs(view.k - kBeforeLong) < 1e-9,
-                'popup=' + String(popupId) + ' k=' + f2(view.k));
+              chk('长按（停留 > tapMs）也能选中站点', !!pick && popupId === pickId && Math.abs(view.k - kBeforeLong) < 1e-9,
+                'popup=' + String(popupId) + ' 期望=' + pickId + ' k=' + f2(view.k));
               /* 用悬浮窗里的按钮派车 */
               $('spGo').click();
               setTimeout(function () {
-                chk('悬浮窗“列车运行到该站”可派车', state.target === 'huochenanzhan',
-                  'target=' + String(state.target) + ', btn=' + $('spGo').textContent);
+                chk('悬浮窗“列车运行到该站”可派车', !!pick && state.target === pickId,
+                  'target=' + String(state.target) + ' 期望=' + pickId + ', btn=' + $('spGo').textContent);
                 chk('悬浮窗按钮变为可取消', /取消/.test($('spGo').textContent), $('spGo').textContent);
                 setTarget(null);
                 closePopup();

@@ -7,7 +7,7 @@
 #   ./tools/headless-selftest.sh                                  # 默认本机 8080 + 1180x820
 #   ./tools/headless-selftest.sh 'http://localhost:8080/index.html?selftest=1' 820x1180
 #   BUDGET=15000 ./tools/headless-selftest.sh                     # 改虚拟时间预算
-# 环境变量: EDGE=<msedge 可执行文件路径>  BUDGET=<虚拟时间预算 ms>
+# 环境变量: EDGE=<msedge 可执行文件路径>  BUDGET=<虚拟时间预算 ms>  ALL=1 打印全部断言（默认只打失败的 + 几条抽样）
 # =============================================================================
 set -uo pipefail
 
@@ -41,7 +41,7 @@ EDGE_EXIT=$?
 echo "== Edge 退出码: $EDGE_EXIT（124=超时）"
 
 python3 - "$OUT" <<'PY'
-import re, json, html, sys
+import re, json, html, sys, os
 s = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
 m2 = re.search(r'<pre id="selftest">(.*?)</pre>', s, re.S)
 if not m2:
@@ -54,6 +54,9 @@ print(('SELFTEST-PASS' if d['ok'] else 'SELFTEST-FAIL'),
       'checks', len(d['checks']), 'pass', len(d['checks']) - len(bad))
 for c in bad:
     print('  FAIL:', c['name'], '|', str(c['detail'])[:160])
+if os.environ.get('ALL'):
+    for c in d['checks']:
+        print('   ', ('P' if c['pass'] else 'F'), c['name'][:60], '|', str(c['detail'])[:170])
 for c in d['checks']:
     if any(k in c['name'] for k in ('刷新', '报站', '位置', '有界', '列表', '版本号')):
         print('   ', ('P' if c['pass'] else 'F'), c['name'][:44], '|', str(c['detail'])[:110])
