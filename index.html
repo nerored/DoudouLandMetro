@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>成都地铁 1 号线 · 列车运行模拟（示意地图）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ======================= 地图舞台 ======================= -->
+  <section id="stage">
+    <svg id="map" xmlns="http://www.w3.org/2000/svg" aria-label="成都地铁1号线示意线路图">
+      <g id="viewport">
+        <g id="world"></g>
+      </g>
+    </svg>
+
+    <div id="hud" class="hud">
+      <div class="hud-row">
+        <span id="hudDir" class="chip chip-dir">往科学城 · 下行</span>
+        <span id="hudDoor" class="chip chip-door">车门关闭</span>
+        <span id="hudPhase" class="chip">运行中</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-kv"><i>当前站</i><b id="hudCur">韦家碾</b></span>
+        <span class="hud-kv"><i>下一站</i><b id="hudNext">升仙湖</b></span>
+        <span class="hud-kv"><i>目标站</i><b id="hudTarget">—</b></span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-kv"><i>已运行</i><b id="hudOdo">0.00 km</b></span>
+        <span class="hud-kv"><i>速度</i><b id="hudSpeed">0 km/h</b></span>
+        <span class="hud-kv"><i>预计到达</i><b id="hudEta">—</b></span>
+      </div>
+    </div>
+
+    <div id="legend" class="panel-glass">
+      <div class="lg-title">图例</div>
+      <div class="lg-item"><span class="lg-dot lg-transfer"></span>换乘站</div>
+      <div class="lg-item"><span class="lg-dot lg-normal"></span>普通站</div>
+      <div class="lg-item"><span class="lg-dot lg-term"></span>端点站</div>
+      <div class="lg-item"><span class="lg-line lg-branch"></span>支线（四河—五根松）</div>
+      <div class="lg-item"><span class="lg-pill">2</span>可换乘线路编号</div>
+      <div class="lg-note">站点坐标与线路弯曲为示意，非实测测绘。</div>
+    </div>
+
+    <div id="scalebar" class="panel-glass">
+      <div class="sb-bar"><span id="sbFill"></span></div>
+      <div class="sb-label" id="sbLabel">2 km</div>
+    </div>
+
+    <div id="compass" class="panel-glass" aria-hidden="true">
+      <svg viewBox="0 0 40 40" width="40" height="40"><path d="M20 4 L27 30 L20 25 L13 30 Z" fill="#33475c"/><text x="20" y="39" text-anchor="middle" font-size="9" fill="#33475c">N</text></svg>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </section>
+
+  <!-- ======================= 控制面板 ======================= -->
+  <aside id="panel">
+    <div class="panel-scroll">
+
+      <section class="card">
+        <h2>列车控制</h2>
+        <div class="row">
+          <button id="btnPlay" class="btn btn-primary" type="button">▶︎ 暂停</button>
+          <button id="btnReset" class="btn" type="button">↺ 复位</button>
+        </div>
+        <div class="row">
+          <div class="seg" id="segSpeed" role="group" aria-label="速度倍率">
+            <button type="button" data-mult="1" class="on">1x</button>
+            <button type="button" data-mult="2">2x</button>
+            <button type="button" data-mult="4">4x</button>
+          </div>
+        </div>
+        <div class="row">
+          <label class="switch"><input type="checkbox" id="chkFollow"><span>跟随列车</span></label>
+        </div>
+        <div class="row">
+          <label class="field"><span>交路</span>
+            <select id="selRoute">
+              <option value="main">韦家碾 ↔ 科学城（主线）</option>
+              <option value="branch">韦家碾 ↔ 五根松（支线）</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>导航</h2>
+        <p class="hint">点击地图上的站点（或下方列表）让列车运行到该站。目标站若在当前行进方向后方，列车会先驶向终点站折返后再抵达；若在另一条交路上，列车会在四河站切换交路。</p>
+        <div class="row row-between">
+          <span class="kv"><i>目标站</i><b id="tgName">未设置</b></span>
+          <button id="btnClearTarget" class="btn btn-sm" type="button">清除</button>
+        </div>
+        <div class="row row-between">
+          <span class="kv"><i>预计到达</i><b id="tgEta">—</b></span>
+        </div>
+        <div class="row row-between">
+          <span class="kv"><i>还需经过</i><b id="tgStops">—</b></span>
+        </div>
+      </section>
+
+      <section class="card" id="cardStation">
+        <h2>站点信息</h2>
+        <div class="row row-between"><span class="kv"><i>车站</i><b id="stName">—</b></span></div>
+        <div class="row row-between"><span class="kv"><i>形式</i><b id="stForm">—</b></span></div>
+        <div class="row row-between"><span class="kv"><i>换乘</i><b id="stTr">—</b></span></div>
+        <div class="row row-between"><span class="kv"><i>里程</i><b id="stKm">—</b></span></div>
+        <button id="btnGoStation" class="btn btn-block" type="button" disabled>运行到该站</button>
+      </section>
+
+      <section class="card">
+        <h2>站点列表 <span class="muted" id="stCount"></span></h2>
+        <div id="stlist" class="stlist"></div>
+      </section>
+
+    </div>
+  </aside>
+</div>
+
+<script src="./data.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
