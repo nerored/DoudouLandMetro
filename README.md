@@ -333,15 +333,44 @@ SELFTEST-PASS checks 87 pass 87     (1024x768)
 SELFTEST-PASS checks 87 pass 87     (800x600)
 ```
 
-**线上地址同样跑一遍**（GitHub Pages，带 cache-buster）：
+**线上地址同样跑一遍**（GitHub Pages，带 cache-buster；以下为本次发版的实际输出）：
 
 ```text
-$ gh api repos/nerored/chengdu-metro-line1/pages/builds/latest --jq .status   → built
-$ curl -s 'https://nerored.github.io/chengdu-metro-line1/version.json?_v=<ts>'   → {"version":"<发版戳>","commit":"<功能提交>"}
-$ ALL=1 ./tools/headless-selftest.sh \
-    'https://nerored.github.io/chengdu-metro-line1/index.html?selftest=1&_v=<ts>' 1400x900
-SELFTEST-PASS checks 87 pass 87
+# ① 等 Pages 构建完成，并核对版本戳的 commit = 那次功能提交
+$ gh api repos/nerored/chengdu-metro-line1/pages/builds/latest --jq '{status,commit}'
+{"status":"built","commit":"a8857a8821d374c25cc87ad57bfaf245f41504fa"}
+$ curl -s "https://nerored.github.io/chengdu-metro-line1/version.json?_v=$(date +%s)"
+{ "version": "2026-09-13.0134", "commit": "56eb3f1", "builtAt": "2026-09-13T01:34:50+08:00" }
+# 56eb3f1 = 补齐全网 17 条线路 + 新底图 那次功能提交
+
+# ② 带 cache-buster 跑三视口自检（下面就是线上返回的断言值）
+$ for S in 1400x900 1024x768 800x600; do
+    ALL=1 ./tools/headless-selftest.sh \
+      "https://nerored.github.io/chengdu-metro-line1/index.html?selftest=1&_v=$(date +%s)" $S
+  done
+SELFTEST-PASS checks 87 pass 87     线上 1400x900
+SELFTEST-PASS checks 87 pass 87     线上 1024x768
+SELFTEST-PASS checks 87 pass 87     线上 800x600
+  P 版本戳已从 version.json 读取（http 环境） | 2026-09-13.0134 · 56eb3f1
+  P 可见站名标签无明显重叠（最大遮挡 < 25%） | 可见 14 / 8 / 6 个标签（三个视口），最差 19.0% / 12.4% / 3.8%
+  P 底图覆盖远端新线（兰家沟 / 龙泉驿 / 天府机场 / 资阳 …） | 资阳北站 河湖1/路49 · 天府机场北 河湖1/路77 …
+
+# ③ 图标那次发版（version 2026-09-13.0136 / commit a060776）的线上核对
+$ curl -s "https://nerored.github.io/chengdu-metro-line1/icon-180.png?cb=$(date +%s%N)" -o /tmp/live-180.png
+$ sha256sum /tmp/live-180.png /home/nero/potato/icon-180.png
+f1b6e80679f4d8e8b051817357ab889f06186c3c25aefea5f505464605a600f8  /tmp/live-180.png
+f1b6e80679f4d8e8b051817357ab889f06186c3c25aefea5f505464605a600f8  /home/nero/potato/icon-180.png   # 一致
+$ sha256sum /tmp/live-icon-32.png /tmp/live-icon-512.png      # 同样一致：
+f46e9e3e… / 5080683e…
+$ git hash-object icon-180.png             → 0a6197c3faf20659ad789eb176b6b3b9c08618f1
+$ gh api repos/nerored/chengdu-metro-line1/contents/icon-180.png --jq .sha
+0a6197c3faf20659ad789eb176b6b3b9c08618f1   # git blob sha 与线上仓库一致
+$ ALL=1 ./tools/headless-selftest.sh "…index.html?selftest=1&_v=…" 1400x900
+SELFTEST-PASS checks 87 pass 87             # 图标发版后线上再跑一遍，仍然全绿
 ```
+
+> 注：`version.json` 的 `commit` 指向那次**功能提交**（`tools/bump-version.sh` 生成时取当前 HEAD，
+> 所以版本戳提交本身不会把自己写进去），不是 `HEAD` 本身。
 
 关键断言（★ = 本次补线新增/改写）：
 
