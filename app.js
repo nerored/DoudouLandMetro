@@ -903,7 +903,7 @@
      到站气泡与列车标签必须避让它们，宁可藏起来也不覆盖控制面板 */
   function reservedBoxes() {
     var out = [], sb = $('stage').getBoundingClientRect();
-    ['hud', 'btnHardRefresh', 'btnPanel', 'compass', 'legend', 'scalebar', 'verBadge', 'stpop'].forEach(function (id) {
+    ['hud', 'btnHardRefresh', 'btnPanel', 'compass', 'legend', 'scalebar', 'stpop'].forEach(function (id) {
       var el = $(id);
       if (!el) return;
       var hidden = el.hidden || (el.classList && el.classList.contains('hide'));
@@ -1671,12 +1671,10 @@
   }
 
   function setVerText(main, extra, cls) {
-    var t = $('verText'), b = $('verBadge');
+    var t = $('verText');
     if (t) t.innerHTML = main + (extra ? ' · ' + extra : '');
-    if (b) {
-      b.textContent = main.replace(/<[^>]*>/g, '');
-      b.className = 'ver-badge' + (cls ? ' ' + cls : '');
-    }
+    var row = $('verRow');
+    if (row) row.className = 'lg-item lg-ver' + (cls ? ' ' + cls : '');
   }
 
   function renderVersion(v) {
@@ -1788,7 +1786,7 @@
   }
 
   function bindVersionUI() {
-    var btn = $('btnRefresh'), badge = $('verBadge'), hard = $('btnHardRefresh');
+    var btn = $('btnRefresh'), row = $('verRow');
     function onTap(e) {
       e.preventDefault();
       e.stopPropagation();
@@ -1796,7 +1794,8 @@
       checkUpdate(false);
     }
     if (btn) btn.addEventListener('click', onTap);
-    if (badge) badge.addEventListener('click', onTap);
+    if (row) row.addEventListener('click', onTap);        // 图例里的版本行也可点
+    var hard = $('btnHardRefresh');
     if (hard) hard.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); hardReload(); });
     fetchVersion(false, true);      // 首次拉取：决定“加载时的版本”
   }
@@ -1956,44 +1955,55 @@
     return null;
   }
 
-  function speak(text, cancelPrev) {
-    /* 注意：绝对不要用 speechSynthesis.cancel() —— iOS/WebKit 上 cancel 之后后续 speak 会直接失效（"没声音"）
-       改为：正在说话就跳过这次播报，不改动队列。 */
-    void cancelPrev;
+  /* 自己的语音队列（不用 speechSynthesis.speaking，iOS 上它会卡在 true 导致后续全部不发声）
+     要点：① 一条一条说，上一条 onend/onerror/看门狗 之后再放下一条；
+           ② 队列最多积压 3 条，超了丢最旧的（高倍速下不会越积越多）；
+           ③ rate 取 clamp(max(1,倍速), 1, 2) —— iOS 对 >2 的语速会截断，宁可用队列排队。 */
+  var speechQ = [], speechBusy = false, speechWatch = null;
+
+  function speak(text) {
     if (!audio.on || !text || !('speechSynthesis' in window)) return;
-    try {
-      var ss = window.speechSynthesis;
-      if (ss.speaking || ss.pending) return;
-      var u = new SpeechSynthesisUtterance(text);
-      u.lang = 'zh-CN';
-      /* 语音与倍速同步：1x=正常语速，2x/5x/10x 按倍率加速（钳到 0.5~5，再高引擎也会截断） */
-      u.rate = clamp(ui.mult, 0.5, 5);
-      u.pitch = 1.0;
-      var v = zhVoice();
-      if (v) u.voice = v;
-      u.onstart = function () {
-        audio.ttsOK = true;
-        audio.ttsSilent = false;
-        updateTtsHint();
-      };
-      u.onerror = function (e) {
-        audio.ttsError = (e && e.error) || 'error';
-        updateTtsHint();
-      };
-      audio.pendingAt = Date.now();
-      ss.speak(u);
-      audio.announcements++;
-      /* 900ms 内没触发 onstart → 判定系统语音不可用，给用户一个明确提示 */
-      setTimeout(function () {
-        if (!audio.ttsOK && audio.on && audio.pendingAt && Date.now() - audio.pendingAt >= 850) {
-          audio.ttsSilent = true;
-          updateTtsHint();
-        }
-      }, 900);
-    } catch (e) { void e; }
+    if (speechQ.length >= 3) speechQ.shift();
+    speechQ.push({ text: text, rate: clamp(Math.max(1, ui.mult), 1, 2) });   // 入队时快照语速
+    pumpSpeech();
   }
 
-  /* 第一次触摸页面时解锁音频（浏览器要求用户手势；iOS 上 TTS 也需在手势里首次调用） */
+  function pumpSpeech() {
+    if (speechBusy || !speechQ.length) return;
+    if (!('speechSynthesis' in window)) { speechQ = []; return; }
+    var item = speechQ.shift();
+    var text = item.text;
+    var ss = window.speechSynthesis;
+    var u;
+    try { u = new SpeechSynthesisUtterance(text); } catch (e) { void e; speechQ = []; return; }
+    u.lang = 'zh-CN';
+    u.rate = item.rate;
+    u.pitch = 1.0;
+    var v = zhVoice();
+    if (v) u.voice = v;
+    speechBusy = true;
+    function done(kind) {
+      if (!speechBusy) return;
+      speechBusy = false;
+      if (speechWatch) { clearTimeout(speechWatch); speechWatch = null; }
+      if (kind === 'end') { audio.ttsOK = true; audio.ttsSilent = false; }
+      if (kind === 'err') audio.ttsError = 'error';
+      updateTtsHint();
+      setTimeout(pumpSpeech, 60);            // 隔一点时间，避免两条粘在一起
+    }
+    u.onstart = function () { audio.ttsOK = true; audio.ttsSilent = false; updateTtsHint(); };
+    u.onend = function () { done('end'); };
+    u.onerror = function () { done('err'); };
+    /* 看门狗：iOS 上 onend 有时不触发，按预估时长兜底放行队列 */
+    var est = Math.min(15000, 240 * text.length / (u.rate || 1) + 2000);
+    if (speechWatch) clearTimeout(speechWatch);
+    speechWatch = setTimeout(function () { speechBusy = false; setTimeout(pumpSpeech, 60); }, est);
+    audio.announcements++;
+    try { ss.speak(u); } catch (e2) { speechBusy = false; speechQ = []; }
+  }
+
+  /* 第一次触摸页面时初始化/解锁音频（浏览器要求用户手势；iOS 上 TTS 也需在手势里首次调用）。
+     声音默认关闭：这里只做初始化与解锁，不主动发声；等用户点顶部中间的「声音」按钮才开。 */
   var audioUnlocked = false;
   function unlockAudio() {
     if (audioUnlocked) return;
@@ -2002,7 +2012,7 @@
     if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
     if (audio.on) {
       bgmEnabled(true);
-      speak('语音报站已开启', true);
+      speak('语音报站已开启');
     }
     updateTtsHint();
   }
@@ -2068,9 +2078,9 @@
     showAnnounce(text);
     if (!audio.on) return;
     /* 语音与倍速同步：任何倍速都朗读（rate 按倍率加速），只是正在说话时跳过下一条避免叠读 */
-    if (kind === 'open' || kind === 'arrive') { chime('open'); speak(text, true); }
-    else if (kind === 'closing') { chime('warn'); speak(text, false); }
-    else { chime('close'); speak(text, false); }
+    if (kind === 'open' || kind === 'arrive') { chime('open'); speak(text); }
+    else if (kind === 'closing') { chime('warn'); speak(text); }
+    else { chime('close'); speak(text); }
   }
 
   /* 报站字幕条（舞台下方居中；TTS 被限制时也能“看”到报站） */
@@ -2101,7 +2111,7 @@
       var ctx = initAudio();
       if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
       bgmEnabled(true);
-      speak('声音已开启，欢迎乘坐豆豆国的地铁', true);
+      speak('声音已开启，欢迎乘坐豆豆国的地铁');
     } else {
       bgmEnabled(false);
     }
@@ -2376,7 +2386,7 @@
     if (map.pop) openPopup(map.pop, null);
     if (map.train) { var ti = parseInt(map.train, 10) - 1; if (setActive(ti)) activateSideEffects(); }
     if (map.sound) setSound(map.sound !== '0');
-    if (map.speak) speak(decodeURIComponent(map.speak), true);
+    if (map.speak) speak(decodeURIComponent(map.speak));
     if (map.panel === 'hide') { $('app').classList.add('panel-hidden'); $('btnPanel').textContent = '☰ 控制'; }
   }
 
@@ -2680,16 +2690,19 @@
       return 'inPanel=' + (!!b && b.closest('#panel') !== null) + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height);
     })());
 
-    chk('版本戳元素存在且内容非空（角落徽标 + 面板行）', (function () {
-      var t = $('verText'), b = $('verBadge');
-      return !!t && !!b && t.textContent.trim().length > 0 && b.textContent.trim().length > 0 && /^v/.test(b.textContent.trim());
-    })(), 'panel="' + $('verText').textContent + '" corner="' + $('verBadge').textContent + '"');
+    chk('版本戳：在左下角图例里（不再有单独的角标）、内容非空、可点', (function () {
+      var t = $('verText'), row = $('verRow'), badge = document.getElementById('verBadge');
+      chk.__ver2 = '图例内=' + (!!row && !!$('legend') && $('legend').contains(row)) +
+        ' 文本="' + (t ? t.textContent.trim() : '-') + '" 旧角标存在=' + !!badge;
+      return !!t && !!row && $('legend').contains(row) && badge === null &&
+        t.textContent.trim().length > 0 && /\d{4}-\d{2}-\d{2}|读取|未知/.test(t.textContent);
+    })(), chk.__ver2);
 
     chk('版本戳已从 version.json 读取（http 环境）', (function () {
       var http = location.protocol === 'http:' || location.protocol === 'https:';
       if (!http) return true;                        // file:// 下 fetch 不可用，跳过
       return !!(BUILD_VERSION && BUILD_VERSION.version) && /^\d{4}-\d{2}-\d{2}/.test(BUILD_VERSION.version) &&
-        /v\d{4}-\d{2}-\d{2}/.test($('verBadge').textContent);
+        /v\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}/.test($('verText').textContent);
     })(), BUILD_VERSION ? (BUILD_VERSION.version + ' · ' + BUILD_VERSION.commit) : '未读取');
 
     chk('点击「检查更新」不会把页面弄坏（已是最新时不重载）', (function () {
@@ -2787,28 +2800,36 @@
       return here.length === 1 && !!b && b.classList.contains('here');
     })(), chk.__lst);
 
-    chk('语音语速与倍速同步（1x=1、5x=5、上限 5）', (function () {
+    chk('语音语速随倍速（rate = clamp(max(1,倍速),1,2)：1x→1、5x→2、10x→2，不丢条）', (function () {
       var desc = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
       var saved = [], bakOn = audio.on, bakMult = ui.mult;
       var stub = {
-        speaking: false, pending: false,
         getVoices: function () { return []; },
         cancel: function () { },
-        speak: function (u) { saved.push(u); }
+        speak: function (u) {
+          saved.push({ text: u.text, rate: u.rate });
+          if (u.onstart) u.onstart();
+          if (u.onend) setTimeout(u.onend, 0);      // 假装引擎很快说完，让队列继续
+        }
       };
       try { Object.defineProperty(window, 'speechSynthesis', { value: stub, configurable: true, writable: true }); }
       catch (e) { return true; }
       setSound(true);
+      speechQ = []; speechBusy = false;        // 清掉“声音已开启”那条，只测报站
       saved = [];
-      ui.mult = 1; announce(state, 'open');
-      ui.mult = 5; announce(state, 'open');
-      ui.mult = 10; announce(state, 'open');
-      var rates = saved.map(function (u) { return u.rate; });
+      ui.mult = 1; announce(state, 'open');    // 立即朗读
+      ui.mult = 5; announce(state, 'open');    // 入队（语速在入队时快照）
+      ui.mult = 10; announce(state, 'open');   // 入队
+      var firstRate = saved.length ? saved[0].rate : null;
+      var qRates = speechQ.map(function (x) { return x.rate; });
+      var firstText = saved.length ? String(saved[0].text) : '';
+      chk.__rate = '首条 rate=' + firstRate + ' 文本=' + firstText.slice(0, 12) +
+        ' 入队语速=' + qRates.join(',') + ' 队列=' + speechQ.length;
       ui.mult = bakMult; setSound(bakOn);
       try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
-      chk.__rate = 'rate=' + rates.join(',');
-      return rates.length >= 3 && rates[0] === 1 && rates[1] === 5 && rates[2] === 5 &&
-        saved[1].text.indexOf('站到了') >= 0;
+      speechQ = []; speechBusy = false;
+      return firstRate === 1 && qRates.length === 2 && qRates[0] === 2 && qRates[1] === 2 &&
+        firstText.indexOf('站到了') >= 0;
     })(), chk.__rate);
 
     chk('速度选项 = 1x/2x/5x/10x，且高倍速下子步不丢步', (function () {
@@ -2883,17 +2904,19 @@
         speaking: false, pending: false,
         getVoices: function () { return []; },
         cancel: function () { calls.cancel++; },
-        speak: function (u) { calls.speak++; saved = u; }
+        speak: function (u) { calls.speak++; saved = u; if (u.onstart) u.onstart(); if (u.onend) setTimeout(u.onend, 0); }
       };
       try {
         Object.defineProperty(window, 'speechSynthesis', { value: stub, configurable: true, writable: true });
       } catch (e) { return true; }                     // 环境不允许覆盖就跳过这条
       setSound(true);
-      calls.speak = 0; calls.cancel = 0;               // 只统计报站那一次
+      speechQ = []; speechBusy = false;               // 清掉“声音已开启”那条，只统计报站
+      calls.speak = 0; calls.cancel = 0;
       announce(state, 'open');
       var txt = saved && saved.text ? String(saved.text) : '';
       setSound(bakOn);
       try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
+      speechQ = []; speechBusy = false;
       chk.__tts = 'speak=' + calls.speak + ' cancel=' + calls.cancel + ' 文本=' + txt.slice(0, 20);
       return calls.speak >= 1 && calls.cancel === 0 && /站到了/.test(txt);
     })(), chk.__tts);
@@ -3208,6 +3231,39 @@
                   try { renderVersion(BUILD_VERSION); } catch (e3) { void e3; }
                   done();
                 }, 700);
+                /* 真实回归：模拟 iOS 引擎（onend 稍后才触发），连报“到站/关门/发车”三条
+                   断言三条都被说出来（之前用 speechSynthesis.speaking 判断，iOS 上会卡住导致后两条全丢） */
+                var desc2 = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
+                var spoken = [], bakOn2 = audio.on, bakMult2 = ui.mult;
+                var stub2 = {
+                  getVoices: function () { return []; },
+                  cancel: function () { spoken.push('CANCEL'); },
+                  speak: function (u) {
+                    spoken.push(u.text);
+                    if (u.onstart) u.onstart();
+                    setTimeout(function () { if (u.onend) u.onend(); }, 30);
+                  }
+                };
+                try { Object.defineProperty(window, 'speechSynthesis', { value: stub2, configurable: true, writable: true }); } catch (e0) { void e0; }
+                setSound(true);
+                speechQ = []; speechBusy = false;
+                spoken = [];
+                ui.mult = 1;
+                announce(state, 'open');
+                announce(state, 'closing');
+                announce(state, 'depart');
+                setTimeout(function () {
+                  var ok = spoken.length === 3 && spoken.indexOf('CANCEL') < 0 &&
+                    /站到了/.test(spoken[0]) && /车门即将关闭/.test(spoken[1]) &&
+                    /豆豆国地铁/.test(spoken[2]) && /下一站/.test(spoken[2]);
+                  chk('连报三条（到站/关门/发车）都会说出，不漏、不 cancel', ok,
+                    spoken.map(function (t2) { return t2.slice(0, 10); }).join(' / '));
+                  ui.mult = bakMult2;
+                  setSound(bakOn2);
+                  try { if (desc2) Object.defineProperty(window, 'speechSynthesis', desc2); } catch (e3) { void e3; }
+                  speechQ = []; speechBusy = false;
+                  done();
+                }, 900);
               }, 340);
             }, 40);
           }, CFG.tapMs + 120);

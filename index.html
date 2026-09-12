@@ -67,6 +67,10 @@
       <div class="lg-item"><span class="lg-dot lg-term"></span>端点站</div>
       <div class="lg-item"><span class="lg-dot lg-planned"></span>在建 / 暂停运营站</div>
       <div class="lg-item"><span class="lg-pill">2</span>可换乘线路编号</div>
+      <div class="lg-item lg-ver" id="verRow" title="当前版本，点一下检查更新">
+        <span class="lg-ver-label">版本</span>
+        <span class="muted" id="verText">读取中…</span>
+      </div>
       <div class="lg-note">站点坐标与轨道几何：© OpenStreetMap contributors（ODbL 1.0）；站序/换乘：百度百科词条。底图为示意，非导航用途。</div>
     </div>
 
@@ -80,9 +84,6 @@
     </div>
 
     <button id="btnPanel" class="panel-toggle" type="button" aria-controls="panel" aria-expanded="true">☰ 控制</button>
-
-    <!-- 角落版本戳：一眼看出是不是新版（点它等同于点面板里的「⟳ 检查更新」） -->
-    <button id="verBadge" class="ver-badge" type="button" title="当前版本，点一下检查更新">v—</button>
 
     <!-- ============ 站点悬浮窗：轻点地图上的站点弹出 ============ -->
     <div id="stpop" class="stpop" hidden role="dialog" aria-label="站点信息">
@@ -130,7 +131,7 @@
           <button id="btnRefresh" class="btn" type="button">⟳ 检查更新</button>
         </div>
         <div class="verline">
-          <span class="muted" id="verText">版本读取中…</span>
+          <span class="muted">当前版本显示在左下角图例里；点图例里的版本号等同于点这个按钮。</span>
         </div>
         <div class="row">
           <div class="seg" id="segSpeed" role="group" aria-label="速度倍率">

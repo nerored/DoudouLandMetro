@@ -385,6 +385,11 @@ body {
 .lg-line { width: 20px; height: 5px; border-radius: 3px; background: var(--line); flex: 0 0 auto; }
 .lg-l2 { background: #e8792a; }
 .lg-branch { background: repeating-linear-gradient(90deg, var(--line) 0 4px, transparent 4px 7px); }
+/* 版本行：图例的一部分，可点（等同“检查更新”） */
+.lg-ver { pointer-events: auto; cursor: pointer; margin-top: 3px; padding-top: 4px;
+  border-top: 1px solid var(--edge); font-variant-numeric: tabular-nums; }
+.lg-ver .lg-ver-label { color: var(--ink-soft); }
+.lg-ver:active { color: var(--ink); }
 .lg-pill {
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; border-radius: 5px;
@@ -588,31 +593,8 @@ body {
 .tchip-pos { flex: 1 1 auto; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tchip-st { flex: 0 0 auto; font-size: 11.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 
+/* 角落版本戳已取消：版本信息并入左下角图例（.lg-ver） */
 .verline { margin-top: 8px; font-size: 11.5px; line-height: 1.4; color: var(--ink-soft); }
-.verline b { color: var(--ink); font-variant-numeric: tabular-nums; }
-
-/* 角落版本戳（HTML 覆盖层，不在地图手势层） */
-.ver-badge {
-  position: absolute;
-  z-index: 30;
-  right: calc(8px + var(--sa-r));
-  top: calc(104px + var(--sa-t));
-  min-height: 32px;
-  padding: 0 9px;
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-soft);
-  background: rgba(255, 255, 255, .9);
-  border: 1px solid var(--edge);
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(30, 40, 50, .08);
-  cursor: pointer;
-  touch-action: manipulation;
-}
-.ver-badge.fresh { color: #1d6b3f; border-color: #8fc39f; background: #eef8f1; }
-.ver-badge.busy { color: #8a5a08; border-color: #e8cf9a; background: #fdf6e3; }
 
 /* ---------------------------------------------------------------- 列车跟随标签 */
 .tp-layer { position: absolute; inset: 0; pointer-events: none; z-index: 36; }
