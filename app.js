@@ -21,18 +21,18 @@
     vmax: 60,              // 巡航速度 km/h（线路设计最高 80 km/h）
     accel: 0.75,           // 加速度 m/s^2
     decel: 0.9,            // 制动减速度 m/s^2
-    openT: 0.9,            // 开门动画 s
-    holdT: 1.8,            // 开门保持 s
-    closeT: 0.9,           // 关门动画 s
-    readyT: 0.5,           // 关门后确认 s
+    openT: 1.2,            // 开门动画 s
+    holdT: 7.0,            // 开门保持（上下客）s
+    closeT: 1.2,           // 关门动画 s
+    readyT: 0.6,           // 关门后确认 s（合计停站 10.0s）
     reverseT: 12,          // 终点站折返 s
-    cars: 3,
-    carLen: 14,            // 车厢长度（地图单位，示意夸张）
-    carGap: 1.8,           // 车厢间隙
+    cars: 8,
+    carLen: 9,             // 车厢长度（地图单位，示意夸张）
+    carGap: 1.2,           // 车厢间隙
     carHW: 5.0,            // 车厢半宽
-    platHalf: 12,          // 站台长度的一半（地图单位）
-    platHW: 7.5,           // 站台半宽
-    stub: 86,              // 端点站外的折返线长度（地图单位）
+    platHalf: 20,          // 站台长度的一半（地图单位）
+    platHW: 8.5,           // 站台半宽
+    stub: 120,             // 端点站外的折返线长度（地图单位，要能容下整列车）
     tapRadius: 30,         // 站点命中半径（屏幕 px，直径 60 >= 44）
     tapMove: 13,           // 判定为拖动的最小位移（屏幕 px）
     tapMs: 2500,           // 静止按压超过该时长仍算选中（只是手感提示，不做拒绝）
@@ -53,23 +53,82 @@
   })();
 
   /* --------------------------------------------------------------- 运行时状态 */
-  var state = {
-    paused: false, mult: 1, follow: false,
-    routeKey: null, dir: 1,
-    posKm: 0, v: 0,
-    phase: 'dwell', phaseT: 0,
-    doorPhase: 'closed', door: 0,
-    curId: null, nextIdx: 1,
-    target: null,
-    odometer: 0,
-    eta: null, etaStops: 0,
-    lastTargetToast: null
-  };
+  /* 全局（与列车无关）的运行/视图开关 */
+  var ui = { paused: false, mult: 1, follow: false };
+
+  /* 每列车的运行状态；state 始终指向「当前控制的那列车」（trains[activeIdx]） */
+  var trains = [];
+  var activeIdx = 0;
+  var state = null;
+
+  function newTrain(homeRoute) {
+    var r = ROUTES[homeRoute];
+    return {
+      homeRoute: homeRoute, routeKey: homeRoute, dir: 1,
+      posKm: r.kmAt[0], v: 0, phase: 'dwell', phaseT: 0,
+      doorPhase: 'opening', door: 0,
+      curId: r.ids[0], nextIdx: 1,
+      target: null, odometer: 0, eta: null, etaStops: 0,
+      lastTargetToast: null, silent: true,
+      aOpened: true, aClosing: true, aDepart: true      // 始发站不报站
+    };
+  }
+
+  function setActive(i) {
+    if (i < 0 || i >= trains.length) return false;
+    activeIdx = i;
+    state = trains[i];
+    return true;
+  }
+
+  /* 每列车默认交路：各线路的第一条交路（需要等 ROUTES 建好，所以在 initTrains 里算） */
+  function trainHomeRoutes() {
+    var keys = Object.keys(ROUTES);
+    return keys.filter(function (k) {
+      return !keys.some(function (k2) {
+        return k2 !== k && ROUTES[k2].lineKey === ROUTES[k].lineKey && keys.indexOf(k2) < keys.indexOf(k);
+      });
+    });
+  }
+
+  function initTrains() {
+    trains = trainHomeRoutes().map(function (k) { return newTrain(k); });
+    setActive(0);
+  }
+
+  function resetTrain(tr, keepTarget) {
+    var tgt = keepTarget ? tr.target : null;
+    var r = ROUTES[tr.homeRoute];
+    tr.routeKey = tr.homeRoute;
+    tr.dir = 1;
+    tr.posKm = r.kmAt[0];
+    tr.v = 0;
+    tr.phase = 'dwell';
+    tr.phaseT = 0;
+    tr.doorPhase = 'opening';
+    tr.door = 0;
+    tr.curId = r.ids[0];
+    tr.nextIdx = 1;
+    tr.odometer = 0;
+    tr.target = tgt;
+    tr.eta = null; tr.etaStops = 0;
+    tr.lastTargetToast = null;
+    tr.aOpened = true; tr.aClosing = true; tr.aDepart = true;   // 起点站不报站
+  }
+
+  function resetAllTrains() {
+    trains.forEach(function (tr) { resetTrain(tr, false); });
+    etaCache = [];
+    if (world) world.style.setProperty('--line', ROUTES[state.routeKey].color);
+    recomputeEta();
+  }
 
   var selected = null;          // 面板里选中的站点 id
   var view = { k: 1, tx: 0, ty: 0, fitted: true };
   var stage = { w: 800, h: 600 };
   var ready = false;
+  var SELFTEST_MODE = /[?&]selftest/.test(location.search);   // 自检模式：降低重绘频率，加快无头运行
+  var renderAcc = 0;
 
   /* --------------------------------------------------------------- 工具函数 */
   function $(id) { return document.getElementById(id); }
@@ -543,27 +602,36 @@
   }
 
   /* ============================================================= 4. 列车 */
-  var trainEls = [];
+  var trainGroups = [];
 
-  function buildTrain() {
-    var g = svg('g', { id: 'train' }, world);
-    var shadow = svg('g', { class: 'train-shadow', transform: 'translate(2.2,3.2)' }, g);
-    var cars = svg('g', null, g);
-    var i;
-    for (i = 0; i < CFG.cars; i++) {
-      var sh = svg('path', null, shadow);
-      var car = svg('g', null, cars);
-      var bodyCls = 'car-body' + (i === 0 ? ' head' : '');
-      trainEls.push({
-        shadow: sh,
-        body: svg('path', { class: bodyCls }, car),
-        nose: i === 0 ? svg('path', { class: 'car-nose' }, car) : null,
-        stripe: svg('path', { class: 'car-stripe' }, car),
-        win: svg('path', { class: 'car-win' }, car),
-        door: svg('path', { class: 'car-door-leaf' }, car),
-        gap: svg('path', { class: 'car-gap' }, car)
-      });
-    }
+  /* 每列车一个 group（3 节车厢）；色带颜色由 group 上的 --line 决定 */
+  function buildTrains() {
+    var wrap = svg('g', { id: 'trains' }, world);
+    trains.forEach(function (tr, ti) {
+      var g = svg('g', { class: 'train', 'data-train': ti }, wrap);
+      g.style.setProperty('--line', ROUTES[tr.routeKey].color);
+      var shadow = svg('g', { class: 'train-shadow', transform: 'translate(2.2,3.2)' }, g);
+      var halo = svg('g', { class: 'train-halo' }, g);
+      halo.style.setProperty('--line', ROUTES[tr.routeKey].color);
+      var sel = svg('circle', { class: 'train-sel', r: 9 }, g);
+      var cars = svg('g', null, g);
+      var els = [];
+      for (var i = 0; i < CFG.cars; i++) {
+        var car = svg('g', null, cars);
+        var bodyCls = 'car-body' + (i === 0 ? ' head' : '');
+        els.push({
+          halo: svg('path', null, halo),
+          shadow: svg('path', null, shadow),
+          body: svg('path', { class: bodyCls }, car),
+          nose: i === 0 ? svg('path', { class: 'car-nose' }, car) : null,
+          stripe: svg('path', { class: 'car-stripe' }, car),
+          win: svg('path', { class: 'car-win' }, car),
+          door: svg('path', { class: 'car-door-leaf' }, car),
+          gap: svg('path', { class: 'car-gap' }, car)
+        });
+      }
+      trainGroups.push({ g: g, sel: sel, els: els });
+    });
   }
 
   function noseProfile(i) {
@@ -575,51 +643,346 @@
     return function () { return 1; };
   }
 
-  function renderTrain() {
-    var route = ROUTES[state.routeKey];
-    var sHead = kmToMap(route, state.posKm);
-    var dir = state.dir;
+  /* 逐列车绘制（贴在各自线路上） */
+  function renderTrains() {
     var total = CFG.cars;
-    for (var i = 0; i < total; i++) {
-      var fS = sHead - dir * i * (CFG.carLen + CFG.carGap);
-      var rS = fS - dir * CFG.carLen;
-      var prof = function (u) { return noseProfile(i)(u) * tailProfile(i, total)(u); };
-      var body = bandPath(route, fS, rS, 0, CFG.carHW, 14, prof);
-      var el = trainEls[i];
-      el.body.setAttribute('d', body);
-      el.shadow.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.12, 12, prof));
-      /* 顶部蓝色色带 */
-      el.stripe.setAttribute('d', bandPath(route, fS + dir * -CFG.carLen * 0.1, rS + dir * CFG.carLen * 0.1, 0, CFG.carHW * 0.17, 8));
-      /* 车窗（两侧各 4 扇，尺寸随车长折算） */
-      var winHalf = CFG.carLen * 0.115;
-      var wins = '';
-      [0.30, 0.45, 0.60, 0.74].forEach(function (u) {
-        var c = fS + (rS - fS) * u;
-        wins += bandPath(route, c + winHalf, c - winHalf, CFG.carHW * 0.62, CFG.carHW * 0.17, 3) + ' ';
-        wins += bandPath(route, c + winHalf, c - winHalf, -CFG.carHW * 0.62, CFG.carHW * 0.17, 3) + ' ';
-      });
-      el.win.setAttribute('d', wins);
-      /* 车门（两侧各 2 组，开门时叶片沿车身滑动分离） */
-      var doorHalf = CFG.carLen * 0.093;
-      var dOpen = state.door * CFG.carLen * 0.083;
-      var doors = '', gaps = '';
-      [0.17, 0.83].forEach(function (u) {
-        var c = fS + (rS - fS) * u;
-        var l1 = c - doorHalf - dOpen, l2 = c - dOpen;
-        var r1 = c + dOpen, r2 = c + doorHalf + dOpen;
-        [[l1, l2], [r1, r2]].forEach(function (seg) {
-          doors += bandPath(route, seg[0], seg[1], CFG.carHW * 0.90, CFG.carHW * 0.24, 3) + ' ';
-          doors += bandPath(route, seg[0], seg[1], -CFG.carHW * 0.90, CFG.carHW * 0.24, 3) + ' ';
+    trains.forEach(function (tr, ti) {
+      var grp = trainGroups[ti];
+      if (!grp) return;
+      var route = ROUTES[tr.routeKey];
+      var sHead = kmToMap(route, tr.posKm);
+      var dir = tr.dir;
+      grp.g.classList.toggle('active', ti === activeIdx);
+      for (var i = 0; i < total; i++) {
+        var fS = sHead - dir * i * (CFG.carLen + CFG.carGap);
+        var rS = fS - dir * CFG.carLen;
+        var prof = function (u) { return noseProfile(i)(u) * tailProfile(i, total)(u); };
+        var el = grp.els[i];
+        el.body.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW, 14, prof));
+        el.halo.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.55, 10, prof));
+        el.shadow.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.12, 12, prof));
+        el.stripe.setAttribute('d', bandPath(route, fS + dir * -CFG.carLen * 0.1, rS + dir * CFG.carLen * 0.1, 0, CFG.carHW * 0.17, 8));
+        var winHalf = CFG.carLen * 0.115;
+        var wins = '';
+        [0.30, 0.45, 0.60, 0.74].forEach(function (u) {
+          var c = fS + (rS - fS) * u;
+          wins += bandPath(route, c + winHalf, c - winHalf, CFG.carHW * 0.62, CFG.carHW * 0.17, 3) + ' ';
+          wins += bandPath(route, c + winHalf, c - winHalf, -CFG.carHW * 0.62, CFG.carHW * 0.17, 3) + ' ';
         });
-        if (dOpen > 0.05) gaps += bandPath(route, c + dOpen * 0.92, c - dOpen * 0.92, 0, CFG.carHW * 1.05, 3) + ' ';
-      });
-      el.door.setAttribute('d', doors);
-      el.gap.setAttribute('d', gaps);
-      if (el.nose) {
-        var nc = fS + (rS - fS) * 0.055;
-        el.nose.setAttribute('d', bandPath(route, fS + (rS - fS) * 0.02, nc, 0, CFG.carHW * 0.78, 4));
+        el.win.setAttribute('d', wins);
+        var doorHalf = CFG.carLen * 0.093;
+        var dOpen = tr.door * CFG.carLen * 0.083;
+        var doors = '', gaps = '';
+        [0.17, 0.83].forEach(function (u) {
+          var c = fS + (rS - fS) * u;
+          var l1 = c - doorHalf - dOpen, l2 = c - dOpen;
+          var r1 = c + dOpen, r2 = c + doorHalf + dOpen;
+          [[l1, l2], [r1, r2]].forEach(function (seg) {
+            doors += bandPath(route, seg[0], seg[1], CFG.carHW * 0.90, CFG.carHW * 0.24, 3) + ' ';
+            doors += bandPath(route, seg[0], seg[1], -CFG.carHW * 0.90, CFG.carHW * 0.24, 3) + ' ';
+          });
+          if (dOpen > 0.05) gaps += bandPath(route, c + dOpen * 0.92, c - dOpen * 0.92, 0, CFG.carHW * 1.05, 3) + ' ';
+        });
+        el.door.setAttribute('d', doors);
+        el.gap.setAttribute('d', gaps);
+        if (el.nose) {
+          var nc = fS + (rS - fS) * 0.055;
+          el.nose.setAttribute('d', bandPath(route, fS + (rS - fS) * 0.02, nc, 0, CFG.carHW * 0.78, 4));
+        }
       }
+      /* 当前控制列车的选中指示（车头位置的小圆环） */
+      var hp = pointAt(route, sHead);
+      grp.sel.setAttribute('cx', f1(hp.x));
+      grp.sel.setAttribute('cy', f1(hp.y));
+      grp.sel.style.stroke = route.color;
+      grp.sel.style.display = (ti === activeIdx) ? '' : 'none';
+    });
+  }
+
+  /* 点到哪列车（车头/车厢中点 30px 内） */
+  function hitTrain(p) {
+    var best = -1, bestD = 30;
+    trains.forEach(function (tr, ti) {
+      var route = ROUTES[tr.routeKey];
+      var sHead = kmToMap(route, tr.posKm);
+      for (var i = 0; i < CFG.cars; i++) {
+        var c = pointAt(route, sHead - tr.dir * (i * (CFG.carLen + CFG.carGap) + CFG.carLen / 2));
+        var d = Math.hypot(c.x * view.k + view.tx - p.x, c.y * view.k + view.ty - p.y);
+        if (d < bestD) { bestD = d; best = ti; }
+      }
+    });
+    return best;
+  }
+
+  /* 下一站预测（用于强调圈与气泡） */
+  function nextStopOf(tr) {
+    var r = ROUTES[tr.routeKey];
+    if (tr.phase === 'reverse') return tr.curId;
+    var i = r.ids.indexOf(tr.curId);
+    if (i < 0) return r.ids[0];
+    if (tr.phase === 'run') return r.ids[tr.nextIdx];
+    var j = i + tr.dir;
+    if (j < 0 || j >= r.ids.length) return tr.curId;
+    return r.ids[j];
+  }
+
+  /* 到下一站的剩余时间：用同一套状态机向前预演到「下一次到站」 */
+  function legEta(tr) {
+    if (tr.phase === 'reverse') return { sec: null, note: '折返换向', id: tr.curId };
+    var sim = cloneTrainState(tr);
+    var startPhase = sim.phase, dir0 = sim.dir, t = 0, guard = 0;
+    while (guard++ < 5000) {
+      stepTrain(sim, 0.25);
+      t += 0.25;
+      var stopped = (sim.phase === 'dwell' && sim.phaseT < 0.3);
+      if (stopped && (startPhase !== 'dwell' || sim.dir !== dir0 || sim.curId !== tr.curId)) {
+        return { sec: t, id: sim.curId, dir: sim.dir };
+      }
+      if (sim.dir !== dir0 && sim.phase === 'reverse') return { sec: t, note: '折返换向', id: sim.curId };
     }
+    return { sec: null, note: '—', id: tr.curId };
+  }
+
+  /* ==================================== 列车强调显示（光晕 + 跟随标签贴片） */
+  var pillLayer = null, pillEls = [];
+
+  function buildTrainPills() {
+    pillLayer = document.createElement('div');
+    pillLayer.id = 'trainpills';
+    pillLayer.className = 'tp-layer';
+    $('stage').appendChild(pillLayer);
+    trains.forEach(function (tr, ti) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tp';
+      b.setAttribute('data-train', ti);
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (ti !== activeIdx) { setActive(ti); activateSideEffects(); }
+        else toast('当前已是这列车：' + LINE_BY_KEY[ROUTES[state.routeKey].lineKey].short);
+      });
+      pillLayer.appendChild(b);
+      pillEls.push(b);
+    });
+  }
+
+  function updateTrainPills() {
+    trains.forEach(function (tr, ti) {
+      var b = pillEls[ti];
+      if (!b) return;
+      var line = LINE_BY_KEY[ROUTES[tr.routeKey].lineKey];
+      var nx = ROUTES[tr.routeKey].ids[tr.nextIdx];
+      var state_txt = tr.phase === 'reverse' ? '折返中'
+        : tr.phase === 'dwell' ? (tr.doorPhase === 'open' ? '开门中' : tr.doorPhase === 'opening' ? '开门中' : tr.doorPhase === 'closing' ? '关门中' : '待发车')
+        : (tr.v >= CFG.vmax - 0.5 ? '巡航' : tr.braking ? '减速' : '加速') + ' ' + tr.v.toFixed(0) + 'km/h';
+      var sig = line.short + '|' + state_txt + '|' + (ti === activeIdx);
+      if (b.__sig !== sig) {
+        b.__sig = sig;
+        b.className = 'tp' + (ti === activeIdx ? ' on' : '');
+        b.innerHTML = '<span class="tp-badge" style="background:' + line.color + '">' + (ti === activeIdx ? '▶ ' : '') +
+          line.short + '</span><b>' + state_txt + '</b>';
+        b.title = '点一下切换为当前控制列车';
+      }
+    });
+  }
+
+  /* 跟随列车头部放置（放在车头上方；与到站气泡一起避让） */
+  function placeTrainPills(placed) {
+    trains.forEach(function (tr, ti) {
+      var b = pillEls[ti];
+      if (!b) return;
+      var route = ROUTES[tr.routeKey];
+      var sHead = kmToMap(route, tr.posKm);
+      var hp = pointAt(route, sHead);
+      var w = b.offsetWidth || 90, h = b.offsetHeight || 26;
+      var x = hp.x * view.k + view.tx - w / 2;
+      var y = hp.y * view.k + view.ty - (CFG.carHW * view.k + 16 + h) * 0.55;
+      x = clamp(x, 6, Math.max(6, stage.w - w - 6));
+      y = clamp(y, 6, Math.max(6, stage.h - h - 6));
+      if (placed) {
+        for (var k = 0; k < placed.length; k++) {
+          var q = placed[k];
+          if (x < q.x + q.w + 4 && x + w + 4 > q.x && y < q.y + q.h + 4 && y + h + 4 > q.y) {
+            y = clamp(q.y - h - 5, 6, Math.max(6, stage.h - h - 6));
+            k = -1;
+          }
+        }
+        placed.push({ x: x, y: y, w: w, h: h });
+      }
+      b.style.left = Math.round(x) + 'px';
+      b.style.top = Math.round(y) + 'px';
+    });
+  }
+
+  /* ==================================================== 下一站强调圈 + 到站气泡 */
+  var markEls = [], bubbleLayer = null, bubbleWraps = {}, bubbleExpanded = {}, etaCache = [];
+
+  function buildNextMarks() {
+    var g = svg('g', { id: 'nextmarks' }, world);
+    trains.forEach(function () {
+      var halo = svg('circle', { class: 'next-halo', r: 16 }, g);
+      var ring = svg('circle', { class: 'next-ring', r: 12 }, g);
+      markEls.push({ halo: halo, ring: ring });
+    });
+    bubbleLayer = document.createElement('div');
+    bubbleLayer.id = 'ntb';
+    bubbleLayer.className = 'ntb-layer';
+    $('stage').appendChild(bubbleLayer);
+  }
+
+  function updateNextMarks(dtRaw) {
+    var now = performance.now();
+    var groups = {};
+    trains.forEach(function (tr, ti) {
+      var mk = markEls[ti];
+      if (!mk) return;
+      var info = etaCache[ti];
+      if (!info || now - info.at > 900) {
+        info = legEta(tr);
+        info.at = now;
+        etaCache[ti] = info;
+      }
+      var sid = info.id || nextStopOf(tr);
+      var st = M.byId[sid];
+      if (!st) { mk.halo.style.display = mk.ring.style.display = 'none'; return; }
+      var col = ROUTES[tr.routeKey].color;
+      mk.halo.setAttribute('cx', f1(st.x)); mk.halo.setAttribute('cy', f1(st.y));
+      mk.ring.setAttribute('cx', f1(st.x)); mk.ring.setAttribute('cy', f1(st.y));
+      mk.halo.style.stroke = col; mk.halo.style.fill = col;
+      mk.ring.style.stroke = col;
+      mk.halo.style.display = mk.ring.style.display = '';
+      mk.halo.classList.toggle('on', ti === activeIdx);
+      (groups[sid] = groups[sid] || []).push({ ti: ti, sec: info.sec, note: info.note, tr: tr });
+    });
+    renderBubbles(groups);
+    if (dtRaw === undefined) positionBubbles();
+  }
+
+  function renderBubbles(groups) {
+    /* 清理不再需要的站点气泡 */
+    Object.keys(bubbleWraps).forEach(function (sid) {
+      if (!groups[sid]) {
+        bubbleWraps[sid].remove();
+        delete bubbleWraps[sid];
+        delete bubbleExpanded[sid];
+      }
+    });
+    Object.keys(groups).forEach(function (sid) {
+      var list = groups[sid];
+      var wrap = bubbleWraps[sid];
+      if (!wrap) {
+        wrap = document.createElement('div');
+        wrap.className = 'ntb-wrap';
+        wrap.setAttribute('data-st', sid);
+        bubbleLayer.appendChild(wrap);
+        bubbleWraps[sid] = wrap;
+      }
+      var expanded = !!bubbleExpanded[sid];
+      var multi = list.length > 1;
+      wrap.classList.toggle('multi', multi);
+      wrap.classList.toggle('expanded', expanded);
+      var items = (multi && !expanded)
+        ? [{ summary: true, list: list }]
+        : list.map(function (x) { return x; });
+      /* 重建内容（数量很少，直接重建最省心） */
+      if (wrap.childNodes.length !== items.length || !wrap.__sig || wrap.__sig !== sigOf(items)) {
+        wrap.innerHTML = '';
+        items.forEach(function (it) {
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'ntb' + (it.summary ? ' ntb-sum' : '');
+          if (it.summary) {
+            var min = null;
+            it.list.forEach(function (x) { if (x.sec != null && (min == null || x.sec < min)) min = x.sec; });
+            b.innerHTML = '<span class="ntb-badge ntb-multi">' + it.list.map(function (x) {
+              return ROUTES[x.tr.routeKey].lineKey;
+            }).join('·') + '</span><b>' + it.list.length + ' 趟列车</b>' +
+              '<i>' + (min != null ? fmtDur(min) : '—') + '</i>';
+            b.title = '点一下展开全部到站气泡';
+          } else {
+            b.innerHTML = '<span class="ntb-badge" style="background:' + ROUTES[it.tr.routeKey].color + '">' +
+              ROUTES[it.tr.routeKey].lineKey + '</span><b>' + (it.sec != null ? fmtDur(it.sec) : (it.note || '—')) + '</b>';
+            b.title = ROUTES[it.tr.routeKey].label + ' · 点一下控制这列车';
+          }
+          b.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            if (it.summary) { bubbleExpanded[sid] = true; updateNextMarks(); }
+            else { setActive(it.ti); activateSideEffects(); }
+          });
+          wrap.appendChild(b);
+        });
+        wrap.__sig = sigOf(items);
+      }
+      var title = document.createElement('div');
+      void title;
+      wrap.setAttribute('data-name', M.byId[sid] ? M.byId[sid].zh : sid);
+    });
+  }
+  function sigOf(items) {
+    return items.map(function (it) {
+      return it.summary ? 'S' + it.list.length : 'T' + it.ti + ':' + (it.sec != null ? Math.round(it.sec / 5) : it.note);
+    }).join('|');
+  }
+
+  /* 气泡定位：列车标签先占位，气泡避开它们、HUD 与彼此，始终留在舞台内 */
+  function positionBubbles() {
+    var hudBox = $('hud') ? $('hud').getBoundingClientRect() : null;
+    var stageBox = $('stage').getBoundingClientRect();
+    var placed = [];
+    placeTrainPills(placed);
+    Object.keys(bubbleWraps).forEach(function (sid) {
+      var st = M.byId[sid], wrap = bubbleWraps[sid];
+      if (!st || !wrap) return;
+      var w = wrap.offsetWidth || 120, h = wrap.offsetHeight || 30;
+      var cx = st.x * view.k + view.tx;
+      var cy = st.y * view.k + view.ty;
+      var x = clamp(cx - w / 2, 6, Math.max(6, stage.w - w - 6));
+      var y = cy - (10 * Math.max(0.7, Math.min(1.6, view.k)) + 14) - h;
+      /* 太靠近顶边或会被 HUD 盖住时，改放到站点下方 */
+      var inHud = hudBox && !(x + w < hudBox.left - stageBox.left || x > hudBox.right - stageBox.left ||
+        y + h < hudBox.top - stageBox.top || y > hudBox.bottom - stageBox.top);
+      if (y < 6 || inHud) {
+        var y2 = cy + 14;
+        if (!hudBox || !(x + w < hudBox.left - stageBox.left || x > hudBox.right - stageBox.left ||
+          y2 + h < hudBox.top - stageBox.top || y2 > hudBox.bottom - stageBox.top)) {
+          y2 = (hudBox ? hudBox.bottom - stageBox.top : 0) + 6;
+        }
+        y = y2;
+      }
+      y = clamp(y, 6, Math.max(6, stage.h - h - 6));
+      /* 与已放置气泡避免重叠 */
+      for (var k = 0; k < placed.length; k++) {
+        var q = placed[k];
+        if (x < q.x + q.w + 4 && x + w + 4 > q.x && y < q.y + q.h + 4 && y + h + 4 > q.y) {
+          y = clamp(q.y + q.h + 5, 6, Math.max(6, stage.h - h - 6));
+          k = -1;
+        }
+      }
+      placed.push({ x: x, y: y, w: w, h: h });
+      wrap.style.left = Math.round(x) + 'px';
+      wrap.style.top = Math.round(y) + 'px';
+    });
+  }
+
+  function collapseBubbles() {
+    var had = Object.keys(bubbleExpanded).length > 0;
+    bubbleExpanded = {};
+    if (had) updateNextMarks();
+    return had;
+  }
+
+  /* 切换当前控制列车后的联动：面板、交路选择、跟随、悬浮窗 */
+  function activateSideEffects() {
+    if (world) world.style.setProperty('--line', ROUTES[state.routeKey].color);
+    $('selRoute').value = state.routeKey;
+    if (ui.follow) followStep(0, true);
+    closePopup();
+    if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
+    updateHud();
+    updateStationList();
+    updateTrainChips();
+    toast('当前控制：' + LINE_BY_KEY[ROUTES[state.routeKey].lineKey].short +
+      '列车（' + M.byId[state.curId].zh + '站附近）');
   }
 
   /* ==================================================== 5. 运行状态机 */
@@ -650,6 +1013,7 @@
     state.door = 0;
     state.doorPhase = 'closed';
     state.v = 0;
+    state.aOpened = true; state.aClosing = true; state.aDepart = true;   // 切交路不报站
     state.odometer = 0;
     world.style.setProperty('--line', r.color);
     if (!quiet) {
@@ -661,22 +1025,8 @@
   }
 
   function resetState(keepTarget) {
-    var tgt = keepTarget ? state.target : null;
-    state.routeKey = DEFAULT_ROUTE;
-    state.dir = 1;
-    state.posKm = 0;
-    state.v = 0;
-    state.phase = 'dwell';
-    state.phaseT = 0;
-    state.doorPhase = 'opening';
-    state.door = 0;
-    state.curId = ROUTES[DEFAULT_ROUTE].ids[0];
-    state.nextIdx = 1;
-    state.odometer = 0;
-    state.target = tgt;
-    state.eta = null; state.etaStops = 0;
-    state.lastTargetToast = null;
-    if (world) world.style.setProperty('--line', ROUTES[DEFAULT_ROUTE].color);
+    resetTrain(state, keepTarget);
+    if (world) world.style.setProperty('--line', ROUTES[state.routeKey].color);
     recomputeEta();
   }
 
@@ -684,7 +1034,7 @@
     st.phase = 'reverse';
     st.phaseT = 0;
     st.v = 0;
-    if (!st.silent) toast('到达 ' + M.byId[st.curId].zh + '（终点站），折返换向中…');
+    if (isActive(st)) toast('到达 ' + M.byId[st.curId].zh + '（终点站），折返换向中…');
   }
 
   function planNext(st) {
@@ -729,11 +1079,11 @@
             st.posKm = route.kmAt[i];
             term = terminusStop(st.dir);
             if (world) world.style.setProperty('--line', route.color);
-            if (!st.silent) toast('在' + M.byId[jn].zh + '站切换交路 → ' + route.label);
+            if (isActive(st)) toast('在' + M.byId[jn].zh + '站切换交路 → ' + route.label);
           }
         } else {
           st.target = null;
-          if (!st.silent) toast('目标在另一条线路上，已取消；可在站点悬浮窗里“切换线路并派车”');
+          if (isActive(st)) toast('目标在另一条线路上，已取消；可在站点悬浮窗里“切换线路并派车”');
         }
       }
     }
@@ -770,10 +1120,11 @@
     st.phaseT = 0;
     st.doorPhase = 'opening';
     st.door = 0;
+    st.aOpened = false; st.aClosing = false; st.aDepart = false;
     if (st.target && st.target === st.curId) {
       st.target = null;
       st.eta = null; st.etaStops = 0;
-      if (!st.silent) toast('已到达目标站：' + M.byId[st.curId].zh);
+      if (isActive(st)) toast('已到达目标站：' + M.byId[st.curId].zh);
     }
   }
 
@@ -785,6 +1136,10 @@
       else if (st.phaseT < t2) { st.doorPhase = 'open'; st.door = 1; }
       else if (st.phaseT < t3) { st.doorPhase = 'closing'; st.door = 1 - (st.phaseT - t2) / CFG.closeT; }
       else { st.doorPhase = 'closed'; st.door = 0; }
+      /* 报站时机：开门（到站）→ 关门警报 → 发车（下一站） */
+      if (!st.aOpened) { st.aOpened = true; announce(st, 'arrive'); }
+      if (st.phaseT >= t2 && !st.aClosing) { st.aClosing = true; announce(st, 'closing'); }
+      if (st.phaseT >= t3 && !st.aDepart) { st.aDepart = true; announce(st, 'depart'); }
       if (st.phaseT >= t4) { st.door = 0; st.doorPhase = 'closed'; planNext(st); }
       return;
     }
@@ -814,12 +1169,15 @@
     if (reached) arrive(st);
   }
 
-  function cloneState() {
+  function cloneTrainState(tr) {
     var o = {};
-    for (var k in state) o[k] = state[k];
+    for (var k in tr) o[k] = tr[k];
     o.silent = true;
     return o;
   }
+  function cloneState() { return cloneTrainState(state); }
+  /* 只有当前控制的那列车才弹提示，背景列车静默运行 */
+  function isActive(st) { return st === state; }
 
   /* 到任意站点的乘车时间预估：用同一套状态机预演一遍（不修改真实状态） */
   function etaFor(id) {
@@ -1049,13 +1407,19 @@
     handleTap(pos);
   }
 
-  /* 轻点：命中站点则弹出悬浮窗，否则关闭悬浮窗。
-     （pointer 事件与 click 事件都会走到这里，用时间戳去重） */
+  /* 轻点：先判列车 → 再判站点 → 都没命中则收起气泡/关闭悬浮窗 */
   function handleTap(pos) {
     lastTapHandled = performance.now();
+    var ti = hitTrain(pos);
+    if (ti >= 0) {
+      if (ti !== activeIdx) { setActive(ti); activateSideEffects(); }
+      else { toast('当前已是这列车：' + LINE_BY_KEY[ROUTES[state.routeKey].lineKey].short); }
+      return;
+    }
     var hit = hitStation(pos);
-    if (hit) openPopup(hit, pos);
-    else closePopup();
+    if (hit) { openPopup(hit, pos); return; }
+    collapseBubbles();
+    closePopup();
   }
 
   function hitStation(p) {
@@ -1075,8 +1439,8 @@
   }
 
   function setFollow(on) {
-    if (state.follow === on) { $('chkFollow').checked = on; return; }
-    state.follow = on;
+    if (ui.follow === on) { $('chkFollow').checked = on; return; }
+    ui.follow = on;
     $('chkFollow').checked = on;
     if (on) {
       var k = clamp(Math.max(view.k, 3.0), minZoom(), 16);
@@ -1086,7 +1450,7 @@
   }
 
   function followStep(dt, snap) {
-    if (!state.follow) return;
+    if (!ui.follow) return;
     var route = ROUTES[state.routeKey];
     var p = pointAt(route, kmToMap(route, state.posKm));
     var wantX = stage.w / 2 - p.x * view.k;
@@ -1108,7 +1472,7 @@
   }
 
   function phaseLabel() {
-    if (state.paused) return '已暂停';
+    if (ui.paused) return '已暂停';
     if (state.phase === 'reverse') return '折返中';
     if (state.phase === 'dwell') {
       if (state.doorPhase === 'opening') return '停站 · 开门中';
@@ -1144,7 +1508,7 @@
     setText('hudSpeed', state.v.toFixed(0) + ' km/h');
     setText('hudEta', state.eta != null ? fmtDur(state.eta) : '—');
     setText('tgName', state.target ? M.byId[state.target].zh + ' 站' : '未设置');
-    setText('tgEta', state.eta != null ? fmtDur(state.eta) + '（实时 ' + fmtDur(state.eta / state.mult) + '）' : '—');
+    setText('tgEta', state.eta != null ? fmtDur(state.eta) + '（实时 ' + fmtDur(state.eta / ui.mult) + '）' : '—');
     setText('tgStops', state.etaStops ? state.etaStops + ' 站' : '—');
   }
 
@@ -1237,6 +1601,336 @@
     }
   }
 
+  /* ============================================ 版本戳与「检查更新 / 刷新」
+     背景：iPad「添加到主屏」后在 standalone 模式下没有地址栏、没有刷新按钮，
+     而且 GitHub Pages 的 HTML/JS 带 cache-control: max-age=600，关掉重开也可能还是旧版。
+     因此提供：① 页面内可见版本戳（读 version.json，cache:'no-store'）
+             ② 「⟳ 检查更新」按钮：拉一次服务器版本比对，不同→带 _v= 新版号 location.replace 强刷；
+                相同→提示已是最新，4 秒内再点一下则强制 cache-busting 重载。
+     version.json 由 tools/bump-version.sh 生成（发版流程见 README）。 */
+  var BUILD_VERSION = null;      // version.json 内容
+  var forceNextRefresh = false;  // 已是最新后再点一下 = 强制刷新
+  var refreshBusy = false;
+
+  function refreshUrlFor(href, stamp) {
+    var u = new URL(href, location.href);
+    u.searchParams.set('_v', stamp == null ? String(Date.now()) : String(stamp));
+    return u.pathname + u.search + u.hash;      // 保留原查询参数（如 selftest=1）与 hash，仅覆盖 _v
+  }
+
+  function setVerText(main, extra, cls) {
+    var t = $('verText'), b = $('verBadge');
+    if (t) t.innerHTML = main + (extra ? ' · ' + extra : '');
+    if (b) {
+      b.textContent = main.replace(/<[^>]*>/g, '');
+      b.className = 'ver-badge' + (cls ? ' ' + cls : '');
+    }
+  }
+
+  function renderVersion(v) {
+    if (v && v.version) {
+      BUILD_VERSION = v;
+      var short = v.commit && v.commit !== 'unknown' ? v.commit : '';
+      setVerText('v' + v.version, short ? '<b>' + short + '</b>' : '', 'fresh');
+    } else {
+      setVerText('v未知', '无法读取 version.json', '');
+    }
+  }
+
+  function fetchVersion(bust) {
+    var url = 'version.json' + (bust ? '?_v=' + Date.now() : '');
+    return fetch(url, { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j && j.version) { renderVersion(j); return j; }
+        renderVersion(null);
+        return null;
+      })
+      .catch(function () { renderVersion(null); return null; });
+  }
+
+  function reloadFresh(label) {
+    setVerText(label || '正在更新…', '', 'busy');
+    var url = refreshUrlFor(location.href);
+    setTimeout(function () { location.replace(url); }, 250);
+  }
+
+  function checkUpdate(force) {
+    if (refreshBusy) return;
+    refreshBusy = true;
+    if (force) { refreshBusy = false; reloadFresh('正在强制重新加载…'); return; }
+    setVerText('正在检查…', '', 'busy');
+    fetchVersion(true).then(function (remote) {
+      refreshBusy = false;
+      var cur = BUILD_VERSION && BUILD_VERSION.version;
+      /* 拉不到版本（离线 / file:// / 网络失败）不能直接重载，否则会无限刷新；
+         此时只提示失败，并在 4 秒内允许再点一下强制刷新。 */
+      if (!remote || !remote.version) {
+        setVerText('v未知', '检查失败（再点一下强制刷新）', '');
+        forceNextRefresh = true;
+        setTimeout(function () {
+          if (!forceNextRefresh) return;
+          forceNextRefresh = false;
+          renderVersion(BUILD_VERSION);
+        }, 4000);
+        return;
+      }
+      if (!cur || remote.version !== cur) {
+        reloadFresh('发现新版本 ' + remote.version + '，正在更新…');
+        return;
+      }
+      setVerText('v' + cur, '已是最新（再点一下强制刷新）', 'fresh');
+      forceNextRefresh = true;
+      setTimeout(function () {
+        if (!forceNextRefresh) return;
+        forceNextRefresh = false;
+        renderVersion(BUILD_VERSION);
+      }, 4000);
+    });
+  }
+
+  function bindVersionUI() {
+    var btn = $('btnRefresh'), badge = $('verBadge');
+    function onTap(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (forceNextRefresh) { forceNextRefresh = false; checkUpdate(true); return; }
+      checkUpdate(false);
+    }
+    if (btn) btn.addEventListener('click', onTap);
+    if (badge) badge.addEventListener('click', onTap);
+    fetchVersion(false);
+  }
+
+  /* ==================================================== 面板：列车选择 */
+  function buildTrainChips() {
+    var box = $('trainChips');
+    if (!box) return;
+    box.innerHTML = '';
+    trains.forEach(function (tr, ti) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tchip';
+      b.setAttribute('data-train', ti);
+      b.addEventListener('click', function () {
+        if (ti !== activeIdx) { setActive(ti); activateSideEffects(); }
+      });
+      box.appendChild(b);
+    });
+    updateTrainChips();
+  }
+
+  function updateTrainChips() {
+    var box = $('trainChips');
+    if (!box) return;
+    trains.forEach(function (tr, ti) {
+      var b = box.querySelector('[data-train="' + ti + '"]');
+      if (!b) return;
+      var line = LINE_BY_KEY[ROUTES[tr.routeKey].lineKey];
+      var nx = ROUTES[tr.routeKey].ids[tr.nextIdx];
+      var st = tr.phase === 'reverse' ? '折返中' : (tr.phase === 'dwell' ? (tr.doorPhase === 'open' ? '开门中' : '停站') : tr.v.toFixed(0) + ' km/h');
+      var sig = line.short + '|' + M.byId[tr.curId].zh + '|' + (nx ? M.byId[nx].zh : '—') + '|' + st + '|' + (ti === activeIdx);
+      if (b.__sig === sig) return;
+      b.__sig = sig;
+      b.className = 'tchip' + (ti === activeIdx ? ' on' : '');
+      b.innerHTML = '<span class="tchip-dot" style="background:' + line.color + '"></span>' +
+        '<span class="tchip-line">' + line.short + '</span>' +
+        '<span class="tchip-pos">' + M.byId[tr.curId].zh + ' → ' + (nx ? M.byId[nx].zh : '—') + '</span>' +
+        '<span class="tchip-st">' + st + '</span>';
+    });
+  }
+
+  /* ==================================================== 声音：BGM / 音效 / 语音播报
+     设计取舍（重要）：
+     * BGM 默认用 **Web Audio 实时合成**的“地铁运行”环境声（绍噪声 + 低频轰鸣，4s 无缝循环）；
+       如果仓库里放了 audio/bgm.mp3（或用户自备）则优先用这个文件。
+       为什么没有直接下一个音频文件：Wikimedia Commons 上唯一的 CC 许可地铁环境声都是 .ogg/.flac，
+       而 iOS Safari 对 Ogg Vorbis 支持不可靠，本机又没有 ffmpeg/编码器可以转成 mp3/m4a（详见 README）。
+     * 开门/关门提示音：Web Audio 合成的双音铃声。
+     * 报站：用浏览器自带的 speechSynthesis（zh-CN）朗读，不依赖任何外部资源。
+     * iOS/Safari 要求音频必须由用户手势开启：先默认为静音，用户点「声音」按钮后才启动。 */
+  var audio = {
+    ctx: null, master: null, bgmGain: null, synth: null, fileEl: null, useFile: false,
+    on: false, vol: 0.6, announcements: 0
+  };
+
+  /* 想用真实录音当 BGM：把文件放进仓库（如 audio/bgm.mp3）并把下面这行改成 'audio/bgm.mp3'。
+     留空（默认）则只用下面实时合成的环境声，也不会发出任何多余请求。 */
+  var BGM_FILE = '';
+
+  function bgmEnabled(flag) {
+    if (audio.bgmGain) audio.bgmGain.gain.value = flag ? 0.16 * audio.vol : 0;
+    if (audio.fileEl) audio.fileEl.volume = flag && audio.useFile ? 0.35 * audio.vol : 0;
+    if (audio.fileEl) {
+      if (flag && audio.useFile) { var p = audio.fileEl.play(); if (p && p.catch) p.catch(function () {}); }
+      else audio.fileEl.pause();
+    }
+  }
+
+  function initAudio() {
+    if (audio.ctx) return audio.ctx;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    var ctx = new AC();
+    var master = ctx.createGain();
+    master.gain.value = 1;
+    master.connect(ctx.destination);
+    audio.ctx = ctx;
+    audio.master = master;
+
+    /* —— 合成的地铁环境声（4s 无缝循环）—— */
+    var g = ctx.createGain();
+    g.gain.value = 0;
+    g.connect(master);
+    audio.bgmGain = g;
+    var sr = ctx.sampleRate, len = 4, buf = ctx.createBuffer(1, sr * len, sr), d = buf.getChannelData(0);
+    var last = 0;
+    for (var i = 0; i < d.length; i++) {
+      var white = Math.random() * 2 - 1;
+      last = (last + 0.02 * white) / 1.02;                 // 绍噪声
+      var t = i / sr;
+      var rumble = Math.sin(2 * Math.PI * 46 * t) * 0.05 + Math.sin(2 * Math.PI * 71 * t) * 0.028;
+      d[i] = (last * 3.1 + rumble) * 0.35;
+    }
+    var fade = Math.floor(sr * 0.4);                        // 循环首尾交叉淡化，避免接头“咔”声
+    for (var k = 0; k < fade; k++) {
+      var w = k / fade;
+      d[k] = d[k] * w + d[d.length - fade + k] * (1 - w);
+    }
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    var lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 430;
+    lp.Q.value = 0.6;
+    src.connect(lp);
+    lp.connect(g);
+    try { src.start(); } catch (e) { void e; }
+    audio.synth = src;
+
+    /* —— 可选：BGM_FILE（自备录音）优先 —— */
+    if (BGM_FILE) {
+      try {
+        var el = document.createElement('audio');
+        el.loop = true;
+        el.preload = 'auto';
+        el.src = BGM_FILE;
+        el.volume = 0;
+        el.addEventListener('canplaythrough', function () { audio.useFile = true; bgmEnabled(audio.on); });
+        el.addEventListener('error', function () { audio.useFile = false; });
+        document.body.appendChild(el);
+        audio.fileEl = el;
+      } catch (e) { void e; }
+    }
+    return ctx;
+  }
+
+  /* 双音提示音：'open' 上行、'close' 下行、'warn' 两声短促 */
+  function chime(kind) {
+    if (!audio.on) return;
+    var ctx = initAudio();
+    if (!ctx) return;
+    var now = ctx.currentTime + 0.02;
+    var seq = kind === 'open' ? [[784, 0], [1046.5, 0.18]]
+      : kind === 'close' ? [[1046.5, 0], [784, 0.18]]
+        : [[988, 0], [988, 0.24]];
+    seq.forEach(function (s) {
+      var o = ctx.createOscillator(), gg = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = s[0];
+      gg.gain.setValueAtTime(0.0001, now + s[1]);
+      gg.gain.linearRampToValueAtTime(kind === 'warn' ? 0.16 : 0.2 * audio.vol, now + s[1] + 0.02);
+      gg.gain.exponentialRampToValueAtTime(0.0001, now + s[1] + 0.45);
+      o.connect(gg);
+      gg.connect(audio.master);
+      o.start(now + s[1]);
+      o.stop(now + s[1] + 0.5);
+    });
+  }
+
+  function zhVoice() {
+    if (!('speechSynthesis' in window)) return null;
+    var vs = window.speechSynthesis.getVoices() || [];
+    for (var i = 0; i < vs.length; i++) if (/^zh/i.test(vs[i].lang)) return vs[i];
+    return null;
+  }
+
+  function speak(text, cancelPrev) {
+    if (!audio.on || !text || !('speechSynthesis' in window)) return;
+    try {
+      var ss = window.speechSynthesis;
+      if (cancelPrev) ss.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = 'zh-CN';
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      var v = zhVoice();
+      if (v) u.voice = v;
+      ss.speak(u);
+      audio.announcements++;
+    } catch (e) { void e; }
+  }
+
+  /* 报站文案（纯函数，便于自检） */
+  function announceText(kind, ctxObj) {
+    if (kind === 'arrive') return ctxObj.zh + '站到了，请下车，注意列车与站台之间的空隙';
+    if (kind === 'closing') return '车门即将关闭，请勿靠近车门';
+    if (kind === 'depart') return '欢迎乘坐成都地铁' + ctxObj.line + '，下一站 ' + ctxObj.next;
+    return '';
+  }
+
+  /* 发车报站用的“下一站”（停站中 nextIdx 还指向本车所在的站） */
+  function nextStopAfter(tr) {
+    var r = ROUTES[tr.routeKey];
+    var i = r.ids.indexOf(tr.curId);
+    var j = i + tr.dir;
+    if (i < 0) return null;
+    if (j < 0 || j >= r.ids.length) return null;      // 已在端点，即将折返
+    return r.ids[j];
+  }
+
+  function announce(st, kind) {
+    if (!isActive(st) || st.silent || !audio.on) return;
+    var r = ROUTES[st.routeKey];
+    var after = nextStopAfter(st);
+    var ctxObj = {
+      zh: M.byId[st.curId] ? M.byId[st.curId].zh : '',
+      next: after && M.byId[after] ? M.byId[after].zh : '',
+      line: LINE_BY_KEY[r.lineKey].key
+    };
+    if (kind === 'arrive') {
+      chime('open');
+      speak(ui.mult >= 2 ? ctxObj.zh + '站' : announceText('arrive', ctxObj), true);
+    } else if (kind === 'closing') {
+      chime('warn');
+      speak(announceText('closing', ctxObj), false);
+    } else if (kind === 'depart') {
+      chime('close');
+      speak(after ? announceText('depart', ctxObj)
+        : '欢迎乘坐成都地铁' + ctxObj.line + '，本次列车已到达终点站', false);
+    }
+  }
+
+  function setSound(on) {
+    audio.on = !!on;
+    var b = $('btnSound');
+    if (b) {
+      b.textContent = audio.on ? '🔊 声音开启' : '🔇 声音关闭';
+      b.setAttribute('aria-pressed', audio.on ? 'true' : 'false');
+      b.classList.toggle('btn-on', audio.on);
+    }
+    if (audio.on) {
+      var ctx = initAudio();
+      if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
+      bgmEnabled(true);
+      speak('声音已开启，欢迎乘坐豆豆国的地铁', true);
+    } else {
+      bgmEnabled(false);
+      if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
+    }
+  }
+
   /* ==================================================== 站点悬浮窗（iPad 主要交互） */
   function setChipLine(el, key) {
     var c = LINE_COLORS[key] || LINE_COLORS['1'] || M.lineColor;
@@ -1308,7 +2002,7 @@
         $('spEtaLbl').textContent = '列车正停靠本站';
       } else {
         $('spEta').textContent = fmtDur(e.seconds);
-        $('spEtaLbl').textContent = '列车到达该站' + (state.mult !== 1 ? '（实时 ' + fmtDur(e.seconds / state.mult) + '）' : '');
+        $('spEtaLbl').textContent = '列车到达该站' + (ui.mult !== 1 ? '（实时 ' + fmtDur(e.seconds / ui.mult) + '）' : '');
       }
       $('spStops').textContent = e.stops ? e.stops + ' 站' : '—';
       var plan = e.reversed && e.switched ? '需先驶向终点折返，再在四河站换交路后到达'
@@ -1325,7 +2019,7 @@
     var doorTxt = state.phase === 'dwell'
       ? (state.doorPhase === 'opening' ? '开门中' : state.doorPhase === 'open' ? '车门开启' : state.doorPhase === 'closing' ? '关门中' : '待发车')
       : '车门关闭';
-    var stTxt = state.paused ? '已暂停'
+    var stTxt = ui.paused ? '已暂停'
       : state.phase === 'dwell' ? doorTxt
       : state.phase === 'reverse' ? '折返换向中'
       : phaseLabel();
@@ -1366,11 +2060,16 @@
     buildRail();
     buildStations();
     buildLabels();
-    buildTrain();
+    initTrains();
+    buildTrains();
+    buildNextMarks();
     buildStationList();
-    resetState(false);
+    resetAllTrains();
     buildLineSelector();
+    buildTrainChips();
+    buildTrainPills();
     bindControls();
+    bindVersionUI();
     resize();
     fitView();
     /* 调试/截图用参数：?adv=秒数 预跑运行模拟, ?follow=1 跟随, ?k=缩放, ?door=1 开门状态 */
@@ -1379,25 +2078,55 @@
     applyView();
     ready = true;
     var last = 0, hudAcc = 0;
-    function frame(t) {
-      requestAnimationFrame(frame);
+    function tick(t) {
       var dtRaw = last ? Math.min(0.12, (t - last) / 1000) : 0;   // 切后台回来不跳变
       last = t;
       if (!ready) return;
-      var dt = dtRaw * (state.paused ? 0 : state.mult);
-      var guard = 0;
-      while (dt > 1e-6 && guard++ < 12) {         // 大 dt 时拆分子步保证物理稳定
-        var sub = Math.min(dt, 0.04);
-        stepTrain(state, sub);
-        dt -= sub;
+      var dt = dtRaw * (ui.paused ? 0 : ui.mult);
+      if (dt > 0) {
+        trains.forEach(function (tr) {
+          var left = dt, guard = 0;
+          while (left > 1e-6 && guard++ < 12) {      // 大 dt 时拆分子步保证物理稳定
+            var sub = Math.min(left, 0.04);
+            stepTrain(tr, sub);
+            left -= sub;
+          }
+        });
       }
-      renderTrain();
+      /* 自检模式把重绘限到 ~10fps（仿真仍逐帧推进），无头跑得快很多；
+         普通模式下每帧都重绘，动画不受影响。 */
+      renderAcc += dtRaw;
+      if (!SELFTEST_MODE || renderAcc >= 0.1) {
+        renderAcc = 0;
+        renderTrains();
+        updateNextMarks(dtRaw);
+        updateTrainPills();
+        positionBubbles();
+      }
       followStep(dtRaw);
       hudAcc += dtRaw;
-      if (hudAcc > 0.12) { hudAcc = 0; updateHud(); refreshPopup(); positionPopup(); }
+      if (hudAcc > 0.12) { hudAcc = 0; updateHud(); refreshPopup(); positionPopup(); updateTrainChips(); }
     }
-    requestAnimationFrame(frame);
-    document.addEventListener('visibilitychange', function () { last = 0; });
+    /* 自检模式用 20Hz 定时器（而不是 rAF）驱动：
+       无头浏览器在 --virtual-time-budget 下，rAF 会把虚拟时钟拖得很慢，定时器则能快速跑完异步链。 */
+    if (SELFTEST_MODE) {
+      setInterval(function () { tick(performance.now()); }, 50);
+    } else {
+      var rafLoop = function (t) { tick(t); requestAnimationFrame(rafLoop); };
+      requestAnimationFrame(rafLoop);
+    }
+    document.addEventListener('visibilitychange', function () {
+      last = 0;
+      /* 切后台：暂停 BGM（环境声与语音），回来再继续，避免后台放声音 */
+      if (document.hidden) {
+        if (audio.fileEl && !audio.fileEl.paused) audio.fileEl.pause();
+        if (audio.ctx && audio.ctx.state === 'running' && audio.ctx.suspend) audio.ctx.suspend();
+        if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) { void e; } }
+      } else if (audio.on) {
+        if (audio.ctx && audio.ctx.state === 'suspended' && audio.ctx.resume) audio.ctx.resume();
+        bgmEnabled(true);
+      }
+    });
     window.addEventListener('resize', resize);
     window.addEventListener('orientationchange', function () { setTimeout(resize, 250); });
     window.addEventListener('scroll', resize, { passive: true });
@@ -1458,13 +2187,16 @@
     if (map.k) zoomAt(stage.w / 2, stage.h / 2, (parseFloat(map.k) || 1) / view.k);
     if (map.target) setTarget(map.target);
     if (map.pop) openPopup(map.pop, null);
+    if (map.train) { var ti = parseInt(map.train, 10) - 1; if (setActive(ti)) activateSideEffects(); }
+    if (map.sound) setSound(map.sound !== '0');
+    if (map.speak) speak(decodeURIComponent(map.speak), true);
     if (map.panel === 'hide') { $('app').classList.add('panel-hidden'); $('btnPanel').textContent = '☰ 控制'; }
   }
 
   function bindControls() {
     $('btnPlay').addEventListener('click', function () {
-      state.paused = !state.paused;
-      this.textContent = state.paused ? '▶︎ 继续' : '⏸ 暂停';
+      ui.paused = !ui.paused;
+      this.textContent = ui.paused ? '▶︎ 继续' : '⏸ 暂停';
       updateHud();
     });
     $('btnReset').addEventListener('click', function () {
@@ -1504,18 +2236,19 @@
     $('segSpeed').addEventListener('click', function (e) {
       var b = e.target.closest('button');
       if (!b) return;
-      state.mult = Number(b.getAttribute('data-mult'));
+      ui.mult = Number(b.getAttribute('data-mult'));
       var all = this.querySelectorAll('button');
       for (var i = 0; i < all.length; i++) all[i].classList.toggle('on', all[i] === b);
       recomputeEta();
       updateHud();
     });
+    $('btnSound').addEventListener('click', function () { setSound(!audio.on); });
     $('chkFollow').addEventListener('change', function () { setFollow(this.checked); });
     $('selRoute').addEventListener('change', function () {
       var key = this.value;
       if (key === state.routeKey) return;
       switchService(key, false);
-      if (state.follow) followStep(0, true);
+      if (ui.follow) followStep(0, true);
       $('selRoute').value = state.routeKey;
       updateHud();
       refreshPopup();
@@ -1732,9 +2465,217 @@
     chk('可见站名标签无明显重叠（最大遮挡 < 25%）', bad.length === 0,
       '可见 ' + labelBoxes.length + ' 个标签，最差遮挡 ' + (worst * 100).toFixed(1) + '%' + (bad.length ? ' 超标: ' + bad.join(',') : ''));
 
-    chk('渲染元素齐备（67 车站 / 67 标签 / 3 车厢）',
-      Object.keys(stationEls).length === 67 && labelEls.length === 67 && trainEls.length === 3,
-      Object.keys(stationEls).length + '/' + labelEls.length + '/' + trainEls.length);
+    chk('刷新 URL 构造：保留原有查询参数（如 selftest=1）且含 _v=', (function () {
+      var out = refreshUrlFor('https://x.test/chengdu-metro-line1/index.html?selftest=1&foo=bar#h', 1234567890);
+      chk.__u1 = out;
+      return /[?&]_v=1234567890/.test(out) && /selftest=1/.test(out) && /foo=bar/.test(out) &&
+        /#h$/.test(out) && out.indexOf('/chengdu-metro-line1/index.html') === 0;
+    })(), chk.__u1);
+
+    chk('刷新 URL 会替换旧的 _v（不重复累加）', (function () {
+      var a = refreshUrlFor('https://x.test/chengdu-metro-line1/index.html?_v=111&selftest=1', 222);
+      chk.__u2 = a;
+      return /_v=222/.test(a) && !/_v=111/.test(a) && /selftest=1/.test(a);
+    })(), chk.__u2);
+
+    chk('「检查更新」按钮在 HTML 面板层、≥44px、可点击', (function () {
+      var b = $('btnRefresh');
+      if (!b) return false;
+      var r = b.getBoundingClientRect();
+      return b.closest('#panel') !== null && b.tagName === 'BUTTON' && r.height >= 44 && r.width >= 44;
+    })(), (function () {
+      var b = $('btnRefresh'), r = b ? b.getBoundingClientRect() : { width: 0, height: 0 };
+      return 'inPanel=' + (!!b && b.closest('#panel') !== null) + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height);
+    })());
+
+    chk('版本戳元素存在且内容非空（角落徽标 + 面板行）', (function () {
+      var t = $('verText'), b = $('verBadge');
+      return !!t && !!b && t.textContent.trim().length > 0 && b.textContent.trim().length > 0 && /^v/.test(b.textContent.trim());
+    })(), 'panel="' + $('verText').textContent + '" corner="' + $('verBadge').textContent + '"');
+
+    chk('版本戳已从 version.json 读取（http 环境）', (function () {
+      var http = location.protocol === 'http:' || location.protocol === 'https:';
+      if (!http) return true;                        // file:// 下 fetch 不可用，跳过
+      return !!(BUILD_VERSION && BUILD_VERSION.version) && /^\d{4}-\d{2}-\d{2}/.test(BUILD_VERSION.version) &&
+        /v\d{4}-\d{2}-\d{2}/.test($('verBadge').textContent);
+    })(), BUILD_VERSION ? (BUILD_VERSION.version + ' · ' + BUILD_VERSION.commit) : '未读取');
+
+    chk('点击「检查更新」不会把页面弄坏（已是最新时不重载）', (function () {
+      var before = location.href;
+      checkUpdate(false);
+      return location.href === before;               // 同版本时只提示，不跳转
+    })());
+
+    chk('渲染元素齐备（67 车站 / 67 标签 / 2 列车×8 车厢）',
+      Object.keys(stationEls).length === 67 && labelEls.length === 67 &&
+      trainGroups.length === 2 && trainGroups.every(function (g) { return g.els.length === 8; }),
+      Object.keys(stationEls).length + '/' + labelEls.length + '/' + trainGroups.length + '×' +
+        (trainGroups[0] ? trainGroups[0].els.length : 0));
+
+    chk('每列车 8 节车厢，且整列车能停在端点折返段内',
+      CFG.cars === 8 && trainGroups.every(function (g) { return g.els.length === 8; }) &&
+      (CFG.cars * CFG.carLen + (CFG.cars - 1) * CFG.carGap) < CFG.stub,
+      '车长合计 ' + f2(CFG.cars * CFG.carLen + (CFG.cars - 1) * CFG.carGap) + ' < 折返段 ' + CFG.stub);
+
+    chk('停站时间 = 10 秒（开门 1.2 + 上下客 7.0 + 关门 1.2 + 待发 0.6）',
+      Math.abs(CFG.openT + CFG.holdT + CFG.closeT + CFG.readyT - 10) < 0.01,
+      f2(CFG.openT + CFG.holdT + CFG.closeT + CFG.readyT) + ' s');
+
+    chk('停站时长在仿真中生效（到站→发车 = 10 s）', (function () {
+      var tr = cloneTrainState(trains[0]);
+      var r = ROUTES[tr.routeKey];
+      tr.phase = 'dwell'; tr.phaseT = 0; tr.door = 0; tr.doorPhase = 'opening';
+      tr.dir = 1; tr.nextIdx = clamp(r.ids.indexOf(tr.curId) + 1, 0, r.ids.length - 1);
+      tr.aOpened = true; tr.aClosing = true; tr.aDepart = true;      // 自检不报站
+      var t = 0, guard = 0;
+      while (guard++ < 3000 && tr.phase === 'dwell') { stepTrain(tr, 0.05); t += 0.05; }
+      chk.__dwell = f2(t) + ' s';
+      return Math.abs(t - 10) < 0.12;
+    })(), chk.__dwell);
+
+    chk('声音：默认关闭（不违反自动播放策略）且开关按钮在面板层、≥44px', (function () {
+      var b = $('btnSound');
+      var r = b ? b.getBoundingClientRect() : { width: 0, height: 0 };
+      chk.__snd = 'text=' + (b ? b.textContent.trim() : '-') + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) +
+        ' on=' + audio.on;
+      return !!b && b.closest('#panel') !== null && r.height >= 44 && r.width >= 44 && audio.on === false;
+    })(), chk.__snd);
+
+    chk('报站文案（到站/关门/发车）包含站名与关键提示', (function () {
+      var a = announceText('arrive', { zh: '文殊院', next: '骡马市', line: '1' });
+      var c = announceText('closing', { zh: '文殊院' });
+      var d = announceText('depart', { zh: '文殊院', next: '骡马市', line: '1' });
+      chk.__ann = a;
+      return a.indexOf('文殊院') >= 0 && a.indexOf('站到了') >= 0 && c.indexOf('车门即将关闭') >= 0 &&
+        d.indexOf('下一站') >= 0 && d.indexOf('骡马市') >= 0;
+    })(), chk.__ann);
+
+    chk('开启声音：音频上下文与合成 BGM/铃音通道就绪，关闭后还原', (function () {
+      var hasAC = typeof (window.AudioContext || window.webkitAudioContext) === 'function';
+      if (!hasAC) return true;                              // 环境不支持就跳过
+      setSound(true);
+      var ok = audio.on === true && !!audio.ctx && !!audio.bgmGain && !!audio.synth &&
+        /开/.test($('btnSound').textContent);
+      setSound(false);
+      chk.__aud = 'ctx=' + !!audio.ctx + ' synth=' + !!audio.synth + ' bgmGain=' + !!audio.bgmGain +
+        ' 已还原=' + (audio.on === false);
+      return ok && audio.on === false;
+    })(), chk.__aud);
+
+    chk('列车强调显示：每列车有光晕 + 跟随标签（带线路与状态）', (function () {
+      var halos = document.querySelectorAll('#trains .train-halo path');
+      var pills = document.querySelectorAll('#trainpills .tp');
+      var hasState = Array.prototype.every.call(pills, function (p) { return p.textContent.trim().length > 2; });
+      chk.__emp = halos.length + ' 光晕 / ' + pills.length + ' 标签 / ' + hasState;
+      return halos.length === 2 * CFG.cars && pills.length === 2 && hasState &&
+        document.querySelectorAll('#trainpills .tp.on').length === 1;
+    })(), chk.__emp);
+
+    /* ================= 多列车：自动运行 / 可点击切换 / 下一站强调与气泡 ================= */
+    function snap(tr) {
+      var o = {};
+      ['routeKey', 'dir', 'posKm', 'v', 'phase', 'phaseT', 'doorPhase', 'door', 'curId',
+        'nextIdx', 'target', 'odometer', 'eta', 'etaStops'].forEach(function (k) { o[k] = tr[k]; });
+      return o;
+    }
+    function restore(tr, o) { for (var k in o) tr[k] = o[k]; }
+    function simAdvance(sec) {
+      var t = 0;
+      while (t < sec) {
+        trains.forEach(function (tr) { stepTrain(tr, 0.05); });
+        t += 0.05;
+      }
+    }
+
+    chk('列车数 = 每条线路 1 列（共 2 列）', trains.length === 2 &&
+      ROUTES[trains[0].routeKey].lineKey === '1' && ROUTES[trains[1].routeKey].lineKey === '2',
+      trains.map(function (t) { return LINE_BY_KEY[ROUTES[t.routeKey].lineKey].short; }).join(' / '));
+
+    chk('打开页面后所有列车自动运行（前进 300s 两列车都位移 > 0.5 km）', (function () {
+      var bak = trains.map(snap);
+      trains.forEach(function (tr) { resetTrain(tr, false); });
+      simAdvance(300);
+      var moved = trains.every(function (tr) { return tr.odometer > 0.5; });
+      var detail = trains.map(function (tr) { return tr.odometer.toFixed(2) + 'km'; }).join(' / ');
+      trains.forEach(function (tr, i) { restore(tr, bak[i]); });
+      chk.__moved = detail;
+      return moved;
+    })(), chk.__moved);
+
+    chk('点击列车可切换当前控制列车（面板/交路/HUD 同步）', (function () {
+      var bakActive = activeIdx, bakSel = $('selRoute').value;
+      var tr1 = trains[1], route = ROUTES[tr1.routeKey];
+      var p = pointAt(route, kmToMap(route, tr1.posKm));
+      var hit = hitTrain({ x: p.x * view.k + view.tx, y: p.y * view.k + view.ty });
+      setActive(1);
+      activateSideEffects();
+      var ok = hit === 1 && activeIdx === 1 && $('selRoute').value === tr1.routeKey &&
+        /2号线/.test($('hudDir').textContent) && document.querySelectorAll('#trainChips .tchip.on').length === 1;
+      var detail = 'hitTrain=' + hit + ' active=' + activeIdx + ' select=' + $('selRoute').value +
+        ' hud="' + $('hudDir').textContent + '"';
+      setActive(bakActive);
+      activateSideEffects();
+      $('selRoute').value = bakSel;
+      chk.__act = detail;
+      return ok;
+    })(), chk.__act);
+
+    chk('当前控制列车有选中标识（虚线环 + 加粗描边）', (function () {
+      var g = document.querySelectorAll('#trains .train');
+      return g.length === 2 && g[activeIdx].classList.contains('active') &&
+        !g[1 - activeIdx].classList.contains('active');
+    })());
+
+    chk('每列车下一站都有强调圈与到站气泡（含量化时间）', (function () {
+      etaCache = [];
+      updateNextMarks();
+      var wraps = Object.keys(bubbleWraps).length;
+      var bubbles = document.querySelectorAll('.ntb');
+      var rings = document.querySelectorAll('.next-ring');
+      var hasTime = Array.prototype.some.call(bubbles, function (b) { return /秒|分/.test(b.textContent); });
+      var visible = Array.prototype.every.call(document.querySelectorAll('.next-ring'), function (c) {
+        return c.style.display !== 'none' && c.getAttribute('cx') !== null;
+      });
+      chk.__bub = wraps + ' 站 / ' + bubbles.length + ' 气泡 / ' + rings.length + ' 圈 / ' + hasTime;
+      return wraps >= 1 && bubbles.length >= 2 && rings.length === 2 && hasTime && visible;
+    })(), chk.__bub);
+
+    chk('同一站点多列车 → 气泡折叠为一条，点击展开全部，点空白收起', (function () {
+      var a = trains[0], b = trains[1], bak = [snap(a), snap(b), activeIdx];
+      var r1 = ROUTES['1main'], r2 = ROUTES['2main'];
+      var i1 = r1.ids.indexOf('tianfuguangchang'), i2 = r2.ids.indexOf('tianfuguangchang');
+      a.routeKey = '1main'; a.curId = r1.ids[i1 - 1]; a.nextIdx = i1;
+      a.posKm = r1.kmAt[i1] - 0.45; a.dir = 1; a.phase = 'run'; a.v = 40;
+      b.routeKey = '2main'; b.curId = r2.ids[i2 - 1]; b.nextIdx = i2;
+      b.posKm = r2.kmAt[i2] - 0.45; b.dir = 1; b.phase = 'run'; b.v = 40;
+      etaCache = [];
+      updateNextMarks();
+      var wrap = bubbleWraps['tianfuguangchang'];
+      var collapsed = !!wrap && wrap.classList.contains('multi') && !wrap.classList.contains('expanded') &&
+        wrap.querySelectorAll('.ntb').length === 1 && /2 趟/.test(wrap.textContent);
+      if (wrap) wrap.querySelector('.ntb').click();
+      var expanded = !!wrap && wrap.classList.contains('expanded') && wrap.querySelectorAll('.ntb').length === 2;
+      /* 找一个离两列车都远的空白点，验证“点空白收起” */
+      var pts = [[6, 6], [stage.w - 6, 6], [6, stage.h - 6], [stage.w - 6, stage.h - 6]];
+      var far = null, farD = -1;
+      pts.forEach(function (q) {
+        var d = 1e9;
+        trains.forEach(function (tr) {
+          var route = ROUTES[tr.routeKey], sh = kmToMap(route, tr.posKm);
+          for (var i = 0; i < CFG.cars; i++) {
+            var c = pointAt(route, sh - tr.dir * (i * (CFG.carLen + CFG.carGap) + CFG.carLen / 2));
+            d = Math.min(d, Math.hypot(c.x * view.k + view.tx - q[0], c.y * view.k + view.ty - q[1]));
+          }
+        });
+        if (d > farD) { farD = d; far = { x: q[0], y: q[1] }; }
+      });
+      if (far && farD > 40) handleTap(far);
+      var collapsed2 = !!wrap && !wrap.classList.contains('expanded');
+      restore(a, bak[0]); restore(b, bak[1]); setActive(bak[2]); activateSideEffects();
+      etaCache = []; updateNextMarks();
+      chk.__fold = 'fold=' + collapsed + ' expand=' + expanded + ' away=' + collapsed2 + ' blankDist=' + Math.round(farD);
+      return collapsed && expanded && collapsed2;
+    })(), chk.__fold);
 
     var pre = document.getElementById('selftest') || document.createElement('pre');
     pre.id = 'selftest';
@@ -1856,7 +2797,42 @@
                   $('btnPanel').click();
                   return hidden && !$('app').classList.contains('panel-hidden');
                 })());
-                done();
+                /* 桩测试：服务端版本更新时，必须用 location.replace + 带 _v 的地址强制重载
+                   （把 fetch 与 navigateTo 换成桩，既验证行为又不真的跳转） */
+                var origFetch = window.fetch, origNav = navigateTo, origVer = BUILD_VERSION, got = null, boom = '';
+                try {
+                  navigateTo = function (u) { got = u; };
+                  BUILD_VERSION = { version: '2000-01-01.0000', commit: 'old' };
+                  window.fetch = function () {
+                    return Promise.resolve({
+                      ok: true,
+                      json: function () { return Promise.resolve({ version: '2099-01-01.0000', commit: 'new' }); }
+                    });
+                  };
+                  checkUpdate(false);
+                } catch (e) { boom = '同步异常: ' + String(e && e.message || e); }
+                setTimeout(function () {
+                  try {
+                    var ok = !!got && /_v=\d+/.test(got) && got.indexOf(location.pathname) === 0;
+                    var keep = '';
+                    if (location.search) {
+                      var key = location.search.replace(/^\?/, '').split('&')[0].split('=')[0];
+                      keep = key;
+                      ok = ok && got.indexOf(key + '=') >= 0;
+                    }
+                    chk('服务端版本更新时：带 _v 的 cache-busting 地址 + location.replace 强制重载', ok,
+                      (boom ? boom + ' ' : '') + 'navigateTo("' + String(got) + '")' +
+                      (keep ? '  保留了 ' + keep + '=' : '') + '  当前 search="' + location.search + '"');
+                  } catch (e2) {
+                    chk('服务端版本更新时：带 _v 的 cache-busting 地址 + location.replace 强制重载', false,
+                      '异常: ' + String(e2 && e2.message || e2));
+                  }
+                  window.fetch = origFetch;
+                  navigateTo = origNav;
+                  BUILD_VERSION = origVer;
+                  try { renderVersion(BUILD_VERSION); } catch (e3) { void e3; }
+                  done();
+                }, 700);
               }, 340);
             }, 40);
           }, CFG.tapMs + 120);
@@ -1894,6 +2870,17 @@
     pointAt: pointAt, kmToMap: kmToMap, recomputeEta: recomputeEta,
     hitStation: hitStation, zoomAt: zoomAt, fitView: fitView, view: view,
     stationKm: stationKm, stationMapS: stationMapS, panBox: panBox, contentBox: contentBox, stage: stage,
-    openPopup: openPopup, closePopup: closePopup, etaFor: etaFor, refreshPopup: refreshPopup
+    openPopup: openPopup, closePopup: closePopup, etaFor: etaFor, refreshPopup: refreshPopup,
+    get trains() { return trains; }, get activeIdx() { return activeIdx; }, setActive: setActive,
+    hitTrain: hitTrain, legEta: legEta, nextStopOf: nextStopOf, updateNextMarks: updateNextMarks,
+    trainPills: pillEls, updateTrainPills: updateTrainPills,
+    collapseBubbles: collapseBubbles, bubbleWraps: bubbleWraps, resetTrain: resetTrain, stepAll: function (sec) {
+      var t = 0;
+      while (t < sec) { trains.forEach(function (tr) { stepTrain(tr, 0.05); }); t += 0.05; }
+    },
+    refreshUrlFor: refreshUrlFor, checkUpdate: checkUpdate, fetchVersion: fetchVersion,
+    get versionInfo() { return BUILD_VERSION; },
+    audio: audio, setSound: setSound, initAudio: initAudio, announce: announce, announceText: announceText,
+    chime: chime, speak: speak, nextStopAfter: nextStopAfter
   };
 })();

@@ -73,6 +73,9 @@
 
     <button id="btnPanel" class="panel-toggle" type="button" aria-controls="panel" aria-expanded="true">☰ 控制</button>
 
+    <!-- 角落版本戳：一眼看出是不是新版（点它等同于点面板里的「⟳ 检查更新」） -->
+    <button id="verBadge" class="ver-badge" type="button" title="当前版本，点一下检查更新">v—</button>
+
     <!-- ============ 站点悬浮窗：轻点地图上的站点弹出 ============ -->
     <div id="stpop" class="stpop" hidden role="dialog" aria-label="站点信息">
       <button id="spClose" class="stpop-x" type="button" aria-label="关闭">✕</button>
@@ -104,10 +107,28 @@
     <div class="panel-scroll">
 
       <section class="card">
+        <h2>列车 <span class="muted">共 2 列 · 自动运行</span></h2>
+        <div id="trainChips" class="tchips"></div>
+        <p class="hint">轻点地图上的列车（或上面的卡片）切换正在控制的列车；切换后下方“线路 / 交路”“导航”“跟随列车”均作用于该列车。</p>
+      </section>
+
+      <section class="card">
         <h2>列车控制</h2>
         <div class="row">
           <button id="btnPlay" class="btn btn-primary" type="button">▶︎ 暂停</button>
           <button id="btnReset" class="btn" type="button">↺ 复位</button>
+        </div>
+        <div class="row">
+          <button id="btnRefresh" class="btn" type="button">⟳ 检查更新</button>
+        </div>
+        <div class="verline">
+          <span class="muted" id="verText">版本读取中…</span>
+        </div>
+        <div class="row">
+          <button id="btnSound" class="btn" type="button" aria-pressed="false">🔇 声音关闭</button>
+        </div>
+        <div class="verline">
+          <span class="muted">声音默认关（iOS 需用户手势才能播放）：开后会循环“地铁运行”环境声，并在开门/关门与报站时播语音。</span>
         </div>
         <div class="row">
           <div class="seg" id="segSpeed" role="group" aria-label="速度倍率">
