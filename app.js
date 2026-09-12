@@ -2725,7 +2725,7 @@
       return location.href === before;               // 同版本时只提示，不跳转
     })());
 
-    chk('刷新/声音按钮已内嵌 HUD；HUD 与图例左对齐、上下留缝一致', (function () {
+    chk('刷新/声音按钮已内嵌 HUD；HUD 与图例左对齐、上下留缝一致，且按钮文字不截断', (function () {
       var hud = $('hud').getBoundingClientRect(), lg = $('legend').getBoundingClientRect();
       var st = $('stage').getBoundingClientRect();
       var hard = $('btnHardRefresh'), snd = $('btnSound');
@@ -2733,12 +2733,16 @@
       var leftDiff = Math.abs(hud.left - lg.left);
       var topGap = hud.top - st.top, bottomGap = st.bottom - lg.bottom;
       var gapDiff = Math.abs(topGap - bottomGap);
+      var clipped = [hard, snd].filter(function (b) {
+        return b.scrollWidth > b.clientWidth + 1 || b.scrollHeight > b.clientHeight + 1;
+      }).length;
       chk.__hr = '左对齐差=' + leftDiff.toFixed(1) + 'px 上缝=' + topGap.toFixed(1) +
         ' 下缝=' + bottomGap.toFixed(1) + ' 按钮在HUD内=' + $('hud').contains(hard) + '/' + $('hud').contains(snd) +
-        ' 尺寸=' + Math.round(hr.width) + 'x' + Math.round(hr.height) + ',' + Math.round(sr.width) + 'x' + Math.round(sr.height);
+        ' 尺寸=' + Math.round(hr.width) + 'x' + Math.round(hr.height) + ',' + Math.round(sr.width) + 'x' + Math.round(sr.height) +
+        ' 文字截断=' + clipped;
       return $('hud').contains(hard) && $('hud').contains(snd) &&
-        hr.height >= 44 && hr.width >= 44 && sr.height >= 44 && sr.width >= 44 &&
-        leftDiff <= 1.5 && gapDiff <= 1.5;
+        hr.height >= 44 && hr.width >= 70 && sr.height >= 44 && sr.width >= 100 &&
+        clipped === 0 && leftDiff <= 1.5 && gapDiff <= 1.5;
     })(), chk.__hr);
 
     chk('点「⟳ 刷新」= 强制整页重拉（cache-busting 地址，用桩验证不真跳转）', (function () {

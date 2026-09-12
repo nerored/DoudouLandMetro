@@ -290,13 +290,14 @@ body {
 .hud-actions { display: flex; gap: 6px; margin-left: auto; }
 .btn-mini {
   min-height: var(--tap);
-  min-width: var(--tap);
-  padding: 0 8px;
-  font-size: 12px;
-  white-space: nowrap;          /* 按钮文字不要折行（否则“🔇 声音关”会挤成两行） */
+  min-width: 76px;              /* 比 44px 宽：保证「⟳ 刷新」能整行显示 */
+  padding: 0 12px;
+  font-size: 12.5px;
+  white-space: nowrap;
   background: rgba(255, 255, 255, .96);
   box-shadow: none;
 }
+.hud-actions #btnSound { min-width: 112px; }   /* 「🔇 声音关」比刷新按钮更长，单独加宽避免截字 */
 .hud-actions .btn[aria-pressed="true"] { border-color: var(--line); color: var(--line-dark); background: #eef4fa; }
 .hud-kv { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
 .hud-kv i { font-style: normal; font-size: 11px; color: var(--ink-soft); }
