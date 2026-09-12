@@ -394,10 +394,24 @@ FILE:// SELFTEST ok = True checks 50
 
 | 工具 | 用途 | 安装 |
 |---|---|---|
-| node ≥ 18 | `node --check app.js data.js` 语法校验 | 已随环境提供（v24.21.0） |
-| python3 | `./serve.sh` 起静态服务器；`tools/build-data.py` 生成 `data.js`；`tools/bump-version.sh` 生成版本戳 | 系统自带（3.14） |
+| node ≥ 18 | `node --check app.js data.js` 语法校验 | 已随环境提供（v24.21.0） || python3 | `./serve.sh` 起静态服务器；`tools/build-data.py` 生成 `data.js`；`tools/bump-version.sh` 生成版本戳 | 系统自带（3.14） |
 | Microsoft Edge / Chromium | 无头自检与截图：`msedge.exe --headless=new --dump-dom '…?selftest=1'`、`--screenshot=…` | 系统已有 |
-| **typescript-language-server** | **编辑器（nvim 的 lspconfig）与 AI 工具链读 JS 诊断/补全用；与应用零依赖无关** | **全局安装：`npm i -g typescript-language-server typescript`**（本机没有 bun；全局 bin 在 nvm 的 PATH 上，nvim/agent 都能发现） |
+| **typescript-language-server** | **编辑器（nvim 的 lspconfig）与 AI 工具链读 JS 诊断/符号/类型用；与应用零依赖无关** | **全局：`npm i -g typescript-language-server typescript`**（本机没有 bun；全局 bin 在 nvm 的 PATH 上，`nvim` 的 `vim.fn.exepath('typescript-language-server')` 能找到） |
+| **typescript（项目内 devDependency）** | 上面那个 server 会从**工作区**解析 `node_modules/typescript/lib/tsserver.js`；**注意 TypeScript 7.x 不再提供 `tsserver.js`**，所以项目里固定用 5.x：`npm i -D --no-package-lock typescript@5`（生成 `package.json`，已被提交；`node_modules/` 在 `.gitignore` 里，**不提交**） | 同上 |
+
+装完自验（在本仓库跑真实 LSP 会话，不需要编辑器）：
+
+```bash
+typescript-language-server --version      # 期望 6.x
+tsc --version                             # 期望 5.x（项目内 node_modules）
+# 用一个临时脚本对 app.js 发 initialize / didOpen / documentSymbol / hover，看能否拿到符号与类型
+node /tmp/lsp-probe3.js
+#   → documentSymbol: 1495 个符号；hover(CFG) 返回
+#     "(local var) CFG: { vmax: number; accel: number; … cars: … }"
+```
+
+> 注：AI 工具自带的 `lsp_diagnostics` 是在会话启动时探测 server 的，**装完需要重启一次会话**它才能用上；
+> 编辑器（nvim）新开一个文件即可，无需重启。
 
 日常验证三步：
 
