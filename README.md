@@ -388,7 +388,28 @@ FILE:// SELFTEST ok = True checks 50
    语音报站依赖系统 TTS（iOS 的「设置 → 辅助功能 → 朗读内容」里需已安装中文语音，一般是自带的婷婷）；
    是否播报、音色、语速最终由浏览器/系统决定，无声音时优先检查是否已点「🔊 声音开启」与 iPad 侧音量。
 
-## 9. 更新记录
+## 9. 开发与验证工具链
+
+应用本身是**零依赖零构建**的静态页面；下面这些只是**开发期工具**，运行时不需要。
+
+| 工具 | 用途 | 安装 |
+|---|---|---|
+| node ≥ 18 | `node --check app.js data.js` 语法校验 | 已随环境提供（v24.21.0） |
+| python3 | `./serve.sh` 起静态服务器；`tools/build-data.py` 生成 `data.js`；`tools/bump-version.sh` 生成版本戳 | 系统自带（3.14） |
+| Microsoft Edge / Chromium | 无头自检与截图：`msedge.exe --headless=new --dump-dom '…?selftest=1'`、`--screenshot=…` | 系统已有 |
+| **typescript-language-server** | **编辑器（nvim 的 lspconfig）与 AI 工具链读 JS 诊断/补全用；与应用零依赖无关** | **全局安装：`npm i -g typescript-language-server typescript`**（本机没有 bun；全局 bin 在 nvm 的 PATH 上，nvim/agent 都能发现） |
+
+日常验证三步：
+
+```bash
+node --check app.js && node --check data.js          # 1) 语法
+./serve.sh 8080 &                                     # 2) 起本地服务
+# 3) 无头自检（结果在 <pre id="selftest"> 与 document.title）
+msedge.exe --headless=new --virtual-time-budget=9000 --window-size=1180,820 \
+  --dump-dom 'http://localhost:8080/index.html?selftest=1'
+```
+
+## 10. 更新记录
 
 * 2026-09-12 · 修 iPad 两个问题：（1）站点可点击 → 轻点弹出悬浮窗（到达时间/列车状态/派车），
   并修掉「点不中」的根因：`viewBox` 与舞台尺寸脱同步（新增 ResizeObserver + visualViewport 监听 +
