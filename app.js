@@ -207,8 +207,12 @@
       var from = ti === 0 ? 0 : 1;        // 段与段的连接点只取一次
       for (k = from; k < tr.samples.length; k++) samples.push(tr.samples[k]);
     });
-    /* 交路两端各加一段折返线延长，使列车可整列停在端点站 */
-    if (samples.length > 1) {
+    /* 交路两端各加一段折返线延长（环线则把首尾闭合，不加折返线） */
+    var isLoop = !!svc.loop;
+    if (isLoop && samples.length > 2) {
+      var f0 = samples[0], l0 = samples[samples.length - 1];
+      if (Math.hypot(f0.x - l0.x, f0.y - l0.y) < 40) samples[samples.length - 1] = { x: f0.x, y: f0.y };
+    } else if (samples.length > 1) {
       var a0 = samples[0], a1 = samples[1];
       var dx0 = a1.x - a0.x, dy0 = a1.y - a0.y, L0 = Math.hypot(dx0, dy0) || 1;
       samples.unshift({ x: a0.x - dx0 / L0 * CFG.stub, y: a0.y - dy0 / L0 * CFG.stub });
@@ -222,6 +226,7 @@
     }
     var route = {
       key: svc.key, label: svc.label, lineKey: svc.lineKey, color: svc.color,
+      loop: isLoop,
       samples: samples, cum: cum, length: cum[cum.length - 1],
       ids: [], mapAt: [], kmAt: [], projErr: 0
     };
@@ -231,7 +236,7 @@
       var r = projectOnPolyline(route, st.x, st.y);
       route.ids.push(id);
       route.mapAt.push(r.s);
-      route.kmAt.push(Math.max(0, r.s - CFG.stub) / M.unitsPerKm);
+      route.kmAt.push(Math.max(0, r.s - (isLoop ? 0 : CFG.stub)) / M.unitsPerKm);
       route.projErr = Math.max(route.projErr, r.d);
     });
     route.kmLength = route.kmAt[route.kmAt.length - 1];
@@ -242,7 +247,12 @@
 
   var ROUTES = {};
   (M.lines || []).forEach(function (line) {
-    line.services.forEach(function (svc) { ROUTES[svc.key] = buildRoute(svc); });
+    line.services.forEach(function (svc) {
+      /* 交路的线路归属/色号：数据里可能只写在 line 上，这里补齐（两种数据形状都能用） */
+      svc.lineKey = svc.lineKey || line.key;
+      svc.color = svc.color || line.color;
+      ROUTES[svc.key] = buildRoute(svc);
+    });
   });
   var ROUTE_KEYS = Object.keys(ROUTES);
   var DEFAULT_ROUTE = ROUTE_KEYS[0];
@@ -547,6 +557,15 @@
   }
 
   function layoutLabels() {
+    /* 只排布可视区域内的站名（366 站全量排布会卡） */
+    var pad = 260 / Math.max(view.k, 0.01);
+    var bx0 = (-view.tx) / view.k - pad, by0 = (-view.ty) / view.k - pad;
+    var bx1 = (stage.w - view.tx) / view.k + pad, by1 = (stage.h - view.ty) / view.k + pad;
+    labelEls.forEach(function (L) {
+      var vis = L.vis && L.st.x >= bx0 && L.st.x <= bx1 && L.st.y >= by0 && L.st.y <= by1;
+      L.inView = vis;
+      L.g.classList.toggle('offscreen', !vis);
+    });
     labelBoxes = [];
     var vis = labelEls.filter(function (L) { return L.vis; });
     var order = vis.slice().sort(function (a, b) {
@@ -662,6 +681,12 @@
       var route = ROUTES[tr.routeKey];
       var sHead = kmToMap(route, tr.posKm);
       var dir = tr.dir;
+      /* 视口裁剪：不在可视区域内的列车不重绘也不显示（线路多/列车多时很重要） */
+      var hp0 = pointAt(route, sHead);
+      var scx = hp0.x * view.k + view.tx, scy = hp0.y * view.k + view.ty;
+      var vis = scx > -220 && scx < stage.w + 220 && scy > -220 && scy < stage.h + 220;
+      grp.g.classList.toggle('offscreen', !vis);
+      if (!vis) return;
       grp.g.classList.toggle('active', ti === activeIdx);
       for (var i = 0; i < total; i++) {
         var fS = sHead - dir * i * (CFG.carLen + CFG.carGap);
@@ -1132,6 +1157,18 @@
   function planNext(st) {
     var route = ROUTES[st.routeKey];
     var i = route.ids.indexOf(st.curId);
+
+    /* 环线：一直朝前走，到末站绕回起点（不折返） */
+    if (route.loop) {
+      var wantLoop = st.target && serviceForStation(st.target, st.routeKey) === st.routeKey ? route.ids.indexOf(st.target) : -1;
+      var nextI = i + 1;
+      if (nextI >= route.ids.length) nextI = 0;
+      st.nextIdx = nextI;
+      st.phase = 'run';
+      st.v = 0;
+      void wantLoop;
+      return;
+    }
 
     /* 只停靠办理客运的站（在建/未开通站直接驶过） */
     function isStop(idx) {
@@ -1629,23 +1666,39 @@
   function buildStationList() {
     var box = $('stlist');
     box.innerHTML = '';
+    var groups = [];
     (M.lines || []).forEach(function (line) {
       line.services.forEach(function (svc, si) {
         var r = ROUTES[svc.key];
+        if (!r) return;
         var ids = r.ids;
-        /* 支线不重复列出与前一条交路共用的区段（从分叉站开始列） */
         var from = 0;
         if (si > 0 && line.services.length > 1) {
           var a = ROUTES[line.services[0].key].ids, n = 0;
           while (n < a.length && n < ids.length && a[n] === ids[n]) n++;
           from = Math.max(0, n - 1);
         }
-        var h = document.createElement('div');
-        h.className = 'grp';
-        h.textContent = line.short + ' · ' + svc.label;
-        box.appendChild(h);
+        var wrap = document.createElement('div');
+        wrap.className = 'stgrp';
+        var head = document.createElement('button');
+        head.type = 'button';
+        head.className = 'grp';
+        head.setAttribute('data-svc', svc.key);
+        head.textContent = line.short + (line.services.length > 1 ? (si === 0 ? ' 主线' : ' 支线') : '') +
+          '（' + svc.label + '）';
+        var body = document.createElement('div');
+        body.className = 'stgrp-body';
+        head.addEventListener('click', function () {
+          wrap.classList.toggle('open');
+          layoutLabels();
+        });
+        wrap.appendChild(head);
+        wrap.appendChild(body);
+        box.appendChild(wrap);
+        groups.push({ line: line.key, svc: svc.key, wrap: wrap, body: body });
         ids.slice(from).forEach(function (id, k) {
           var st = M.byId[id];
+          if (!st) return;
           var seq = from + k;
           var b = document.createElement('button');
           b.type = 'button';
@@ -1654,7 +1707,7 @@
           no.className = 'no';
           no.textContent = (si > 0 && line.services.length > 1)
             ? ('0' + line.key + '|Y' + (seq - from + 1))
-            : ('0' + line.key + '|' + String(seq + 1).padStart(2, '0'));
+            : (line.short.replace('号线', '') + '|' + String(seq + 1).padStart(2, '0'));
           var nm = document.createElement('span');
           nm.className = 'nm';
           nm.textContent = st.zh;
@@ -1663,19 +1716,22 @@
           if (st.lines && st.lines.length > 1) {
             var t0 = document.createElement('span'); t0.className = 'tag tr';
             t0.textContent = '换乘'; b.appendChild(t0);
-          } else if (st.tr && st.tr.length) {
-            var t = document.createElement('span'); t.className = 'tag tr';
-            t.textContent = st.tr.join('/'); b.appendChild(t);
           }
-          if (st.term) { var t2 = document.createElement('span'); t2.className = 'tag'; t2.textContent = '端点'; b.appendChild(t2); }
           if (st.status) { var t3 = document.createElement('span'); t3.className = 'tag'; t3.textContent = st.status; b.appendChild(t3); }
           b.addEventListener('click', function () { setTarget(id); updateStationList(); });
-          box.appendChild(b);
+          body.appendChild(b);
         });
       });
     });
+    groupEls = groups;
     $('stCount').textContent = '共 ' + M.stations.length + ' 站 · ' + (M.lines || []).length + ' 条线路';
+    openGroupForLine(ROUTES[state.routeKey].lineKey);
     updateStationList();
+  }
+
+  var groupEls = [];
+  function openGroupForLine(lineKey) {
+    groupEls.forEach(function (g) { g.wrap.classList.toggle('open', g.line === lineKey); });
   }
 
   /* 线路 / 交路选择器（按线路分组） */
@@ -2364,7 +2420,9 @@
       if (!SELFTEST_MODE || renderAcc >= 0.1) {
         renderAcc = 0;
         renderTrains();
-        updateNextMarks(dtRaw);
+      updateNextMarks(dtRaw);
+      updateTrainPills();
+      positionBubbles();        updateNextMarks(dtRaw);
         updateTrainPills();
         positionBubbles();
       }
@@ -2555,6 +2613,12 @@
       if (!cond) out.ok = false;
     }
     var names = M.stations.map(function (s) { return s.zh; });
+    /* 数据驱动：按线路 key 取它的第一个交路 key（现在线路多了，交路 key 不再都是 'Nmain'） */
+    function svcOf(lineKey, idx) {
+      var l = (M.lines || []).filter(function (x) { return x.key === lineKey; })[0];
+      return l ? l.services[idx || 0].key : null;
+    }
+    var L2 = svcOf('2');
     var expectL1 = ['韦家碾', '升仙湖', '火车北站', '人民北路', '文殊院', '骡马市', '天府广场', '锦江宾馆', '华西坝',
       '省体育馆', '倪家桥', '桐梓林', '火车南站', '高新', '金融城', '孵化园', '锦城广场', '世纪城', '天府三街',
       '天府五街', '华府大道', '四河', '华阳', '海昌路', '广福', '红石公园', '麓湖', '武汉路', '天府公园', '西博城',
@@ -2569,15 +2633,15 @@
     chk('1 号线主线顺序 = 官方列表（韦家碾→科学城）', zh('1main').join(',') === expectL1.join(','), zh('1main').length);
     chk('1 号线支线顺序 = 韦家碾…四河,广都,五根松',
       zh('1branch').join(',') === expectL1.slice(0, 22).concat(['广都', '五根松']).join(','), zh('1branch').length);
-    chk('2 号线顺序 = 官方列表（犀浦→龙泉驿，含在建站）', zh('2main').join(',') === expectL2.join(','), zh('2main').length);
+    chk('2 号线顺序 = 官方列表（犀浦→龙泉驿，含在建站）', zh(L2).join(',') === expectL2.join(','), zh(L2).length);
     chk('天府广场是 1/2 号线唯一换乘站', (function () {
       var shared = M.stations.filter(function (s) { return s.lines && s.lines.length > 1; });
       return shared.length === 1 && shared[0].id === 'tianfuguangchang';
     })(), M.stations.filter(function (s) { return s.lines && s.lines.length > 1; }).length + ' 个');
     chk('1 号线里程 ≈ 37.5 km（OSM 轨道弧长）', Math.abs(ROUTES['1main'].kmLength - 37.45) < 0.6, f2(ROUTES['1main'].kmLength));
-    chk('2 号线里程 ≈ 41.7 km', Math.abs(ROUTES['2main'].kmLength - 41.66) < 0.8, f2(ROUTES['2main'].kmLength));
-    chk('起点站里程 = 0', ROUTES['1main'].kmAt[0] < 0.02 && ROUTES['2main'].kmAt[0] < 0.02,
-      f2(ROUTES['1main'].kmAt[0]) + ' / ' + f2(ROUTES['2main'].kmAt[0]));
+    chk('2 号线里程 ≈ 41.7 km', Math.abs(ROUTES[L2].kmLength - 41.66) < 0.8, f2(ROUTES[L2].kmLength));
+    chk('起点站里程 = 0', ROUTES['1main'].kmAt[0] < 0.02 && ROUTES[L2].kmAt[0] < 0.02,
+      f2(ROUTES['1main'].kmAt[0]) + ' / ' + f2(ROUTES[L2].kmAt[0]));
     chk('1 号线主线+支线合计 ≈ 41 km（官方口径）',
       Math.abs(ROUTES['1main'].kmLength + (ROUTES['1branch'].kmLength -
         ROUTES['1branch'].kmAt[ROUTES['1branch'].ids.indexOf('sihe')]) - 40.3) < 1.0,
@@ -2601,7 +2665,7 @@
     chk('站点到轨道最大投影误差 < 1 m', maxProj < 1.0, f2(maxProj) + ' m');
     chk('站点里程单调递增', mono);
     chk('端点在路径两端（含折返线延长段）',
-      ROUTES['1main'].mapAt[0] > 40 && ROUTES['2main'].mapAt[0] > 40 &&
+      ROUTES['1main'].mapAt[0] > 40 && ROUTES[L2].mapAt[0] > 40 &&
       ROUTES['1main'].mapAt[ROUTES['1main'].mapAt.length - 1] < ROUTES['1main'].length - 40);
 
     /* 列车几何：车体轮廓顶点到路径的距离应等于设计半宽 */
@@ -2639,7 +2703,7 @@
 
     /* 2 号线全程：在营 32 站停靠，在建的龙泉驿火车站不停靠 */
     var sim2l = cloneState();
-    sim2l.routeKey = '2main'; sim2l.curId = 'xipu'; sim2l.posKm = 0; sim2l.dir = 1;
+    sim2l.routeKey = L2; sim2l.curId = 'xipu'; sim2l.posKm = 0; sim2l.dir = 1;
     sim2l.phase = 'dwell'; sim2l.phaseT = 0; sim2l.nextIdx = 1; sim2l.target = null;
     var t2l = 0, stops2 = [];
     while (t2l < 20000) {
@@ -3093,11 +3157,11 @@
 
     chk('同一站点多列车 → 气泡折叠为一条，点击展开全部，点空白收起', (function () {
       var a = trains[0], b = trains[1], bak = [snap(a), snap(b), activeIdx];
-      var r1 = ROUTES['1main'], r2 = ROUTES['2main'];
+      var r1 = ROUTES['1main'], r2 = ROUTES[L2];
       var i1 = r1.ids.indexOf('tianfuguangchang'), i2 = r2.ids.indexOf('tianfuguangchang');
       a.routeKey = '1main'; a.curId = r1.ids[i1 - 1]; a.nextIdx = i1;
       a.posKm = r1.kmAt[i1] - 0.45; a.dir = 1; a.phase = 'run'; a.v = 40;
-      b.routeKey = '2main'; b.curId = r2.ids[i2 - 1]; b.nextIdx = i2;
+      b.routeKey = L2; b.curId = r2.ids[i2 - 1]; b.nextIdx = i2;
       b.posKm = r2.kmAt[i2] - 0.45; b.dir = 1; b.phase = 'run'; b.v = 40;
       etaCache = [];
       updateNextMarks();

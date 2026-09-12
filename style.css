@@ -507,6 +507,32 @@ body {
 }
 .announce.show { opacity: 1; transform: translate(-50%, 0); }
 
+/* 线路筛选 / 视口裁剪：不显示的元素 */
+.line-off,
+.offscreen { display: none !important; }
+
+/* 站点列表：按线路分组的折叠块 */
+.stgrp { border-top: 1px solid var(--edge); }
+.stgrp > .grp {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  padding: 4px 6px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  background: rgba(255, 255, 255, .6);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.stgrp > .grp::before { content: '▸ '; color: var(--ink-soft); }
+.stgrp.open > .grp::before { content: '▾ '; }
+.stgrp-body { display: none; }
+.stgrp.open .stgrp-body { display: block; }
+
 .toast {
   position: absolute;
   left: 50%;
