@@ -291,8 +291,9 @@ body {
 .btn-mini {
   min-height: var(--tap);
   min-width: var(--tap);
-  padding: 0 9px;
-  font-size: 12.5px;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;          /* 按钮文字不要折行（否则“🔇 声音关”会挤成两行） */
   background: rgba(255, 255, 255, .96);
   box-shadow: none;
 }
