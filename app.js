@@ -40,10 +40,12 @@
     dblMs: 320,            // 双击间隔
     fadeLabels: 0.60,      // 低于该缩放只显示重点站名
     /* 底图道路层的缩放 LOD：实测 6000 段路被描两遍占了一帧栅格时间的一半以上，
-       而缩到全网时线宽不足 0.8px（看不见却很贵），所以按缩放分三档：
-       k >= roadsFullZoom 完整（描边 + 主线）/ roadsHideZoom <= k < 道路完整阈值 只留主线 / k < roadsHideZoom 整层不画。 */
+       而缩到全网时线宽不足 1px（看不见却很贵）→ 分三档：
+       k >= roadsFullZoom 完整（描边 + 主线）/ roadsHideZoom <= k < roadsFullZoom 只留主线 / k < roadsHideZoom 整层不画。
+       阈值要“咬得住”：实测桌面/横屏手机的全网适配 zoom 约 0.10~0.28，
+       所以隐藏阈值取 0.26（以前 0.10 比手机横屏的 minZoom(≈0.085) 只低一点，要缩到底才生效）。 */
     roadsFullZoom: 0.55,
-    roadsHideZoom: 0.10
+    roadsHideZoom: 0.26
   };
 
   var VIEW_MARGIN = { x: 210, y: 205 };   // 适配视图时线路四周的留白（地图单位，给 HUD/图例留位置）
@@ -702,13 +704,19 @@
       if (st.tr && st.tr.length) p += 100;
       return p;
     }
-    var budget = (stage.w * stage.h) < 900000 ? clamp(Math.round((stage.w * stage.h) / 45000), 8, 22) : 999;
+    /* 同优先级时的取舍：按纬度排会把预算全花在最北边那一撮上（手机上缩到全网就只剩西北角几个站名），
+       改成空间哈希——同优先级的站按位置打散，斜地图上更容易形成“东南西北都有”的分布。 */
+    function spreadKey(L) {
+      var st = L.st;
+      return ((st.x * 73856093) ^ (st.y * 19349663)) % 100003;
+    }
+    var budget = (stage.w * stage.h) < 900000 ? clamp(Math.round((stage.w * stage.h) / 16000), 16, 34) : 999;
     if (budget < 999) {
       vis = vis.slice().sort(function (a, b) {
         var pa = prio(a), pb = prio(b);
         if (pa !== pb) return pb - pa;
         if (a.key !== b.key) return a.key ? -1 : 1;
-        return a.st.y - b.st.y;
+        return spreadKey(a) - spreadKey(b);
       }).slice(0, budget);
       var inBudget = {};
       vis.forEach(function (L) { inBudget[L.st.id] = 1; });
@@ -722,7 +730,7 @@
         if (pa !== pb) return pb - pa;
       }
       if (a.key !== b.key) return a.key ? -1 : 1;
-      return a.st.y - b.st.y;
+      return spreadKey(a) - spreadKey(b);
     });
     order.forEach(function (L) {
       var tries = [
@@ -824,10 +832,12 @@
   }
 
   function updateLabelScale() {
-    /* 站名标签屏幕恒定：字号 15 地图单位 × labelScale × view.k = 15px 屏幕。
-       以前把 labelScale 封顶在 2.0，低缩放下标签会缩成 3px 的噪声（看得见但读不着）；
-       现在不封顶——标签一多，就交给小视口预算 + 防重叠去淘汰，数量可控、字号不糊。 */
-    labelScale = Math.max(0.34, 1 / view.k);
+    /* 站名标签“屏幕恒定”，但屏幕大小分两档：
+       宽舞台（平板/桌面）15px——这是用户认可的观感；窄舞台（手机）11px——
+       同样是 15px 的话，390px 宽的地图上根本塞不下几个站名（用户反馈“缩小了也不显示”）。
+       不再对 labelScale 设下限：下限会让高缩放下字号偷偷变大（失恒）。 */
+    var screenPx = stage.w < 700 ? 11 : 15;
+    labelScale = screenPx / (15 * view.k);
     var all = view.k >= CFG.fadeLabels;
     labelEls.forEach(function (L) {
       var vis = all || L.key;
@@ -1216,8 +1226,11 @@
       b.className = 'lg-chip';
       b.setAttribute('data-line', l.key);
       b.setAttribute('aria-pressed', 'false');
-      b.innerHTML = '<i style="background:' + l.color + '"></i>' + l.short + '<em>' + n + '</em>';
-      b.title = l.name + '（点一下只看该线，可多选）';
+      /* 宽屏下是三列网格（格子只有 ~65px）：名字取紧凑写法（S3 这种长名只写线号，全名在 title 里），
+         站数换到第二行。 */
+      var chipTxt = /^[0-9]+号线$/.test(l.short) ? l.short : l.key;
+      b.innerHTML = '<i style="background:' + l.color + '"></i><b class="lg-name">' + chipTxt + '</b><em>' + n + ' 站</em>';
+      b.title = l.name + '（' + n + ' 站，点一下只看该线，可多选）';
       b.addEventListener('click', function (e) {
         e.stopPropagation();
         ui.showLines = ui.showLines || {};
@@ -2132,16 +2145,19 @@
   /* （旧）面板折叠按钮的处理器已删除：宽屏改用 #panelRail 的滑动/点击，手机用底部把手。 */
   function bindPanelToggleRemoved() { return null; }
 
-  /* 横向滑动条的“还能滑”渐隐：按真实滚动位置切 class（at-scrolled = 已经滑离起点，at-end = 到底了） */
+  /* 滑动条的“还能滑”渐隐：按真实滚动位置切 class。
+     横滑带看 scrollLeft，竖向列表（宽屏的“切换列车”）看 scrollTop——同一套类名两边通用。 */
   function updateReelFades() {
     ['trainChips', 'lgLines'].forEach(function (id) {
       var el = $(id);
       if (!el) return;
-      var max = el.scrollWidth - el.clientWidth;
+      var vertical = getComputedStyle(el).flexDirection === 'column';
+      var pos = vertical ? el.scrollTop : el.scrollLeft;
+      var max = vertical ? (el.scrollHeight - el.clientHeight) : (el.scrollWidth - el.clientWidth);
       var noNeed = max <= 1;
       el.classList.toggle('at-both', noNeed);
-      el.classList.toggle('at-scrolled', !noNeed && el.scrollLeft > 1);
-      el.classList.toggle('at-end', !noNeed && el.scrollLeft >= max - 1);
+      el.classList.toggle('at-scrolled', !noNeed && pos > 1);
+      el.classList.toggle('at-end', !noNeed && pos >= max - 1);
     });
   }
 
@@ -2275,6 +2291,23 @@
   /* 站点列表：按线路/交路分组的折叠块 + 搜索（366 站，搜索是必需的） */
   var groupEls = [];
   var lastScrolledKey = null;
+  /* 双击站点行 → 把地图视角聚焦过去（居中到可见区，并放大到看得清的档位）
+     跟随列车开着的时候必须先关掉，否则下一帧就被跟随拉回去了。 */
+  function focusStation(id) {
+    var st = M.byId[id];
+    if (!st) return;
+    if (ui.follow) setFollow(false);
+    view.fitted = false;
+    view.k = clamp(Math.max(view.k, 1.5), minZoom(), 16);
+    var vr = visibleRect();
+    view.tx = vr.w / 2 - st.x * view.k;
+    view.ty = vr.h / 2 - st.y * view.k;
+    clampView(); applyView(); updateLabelScale(); updateScaleBar();
+    layoutLabels(); positionBubbles();
+    openPopup(id, { x: st.x * view.k + view.tx, y: st.y * view.k + view.ty });
+    toast('已聚焦：' + st.zh);
+  }
+
   function stationRow(id, noText) {
     var st = M.byId[id];
     if (!st) return null;
@@ -2302,6 +2335,11 @@
     }
     if (st.status) { var t3 = document.createElement('span'); t3.className = 'tag'; t3.textContent = st.status; b.appendChild(t3); }
     b.addEventListener('click', function () { setTarget(id); updateStationList(); });
+    b.addEventListener('dblclick', function (e) {
+      e.preventDefault();
+      focusStation(id);                     // 双击 = 视角聚焦到该站（单击仍是“派车到该站”）
+    });
+    b.title = '单击：列车运行到该站 · 双击：地图聚焦到该站';
     return b;
   }
 
@@ -4391,31 +4429,46 @@
                     Math.abs(wBack - wBefore) < 1;
                 })(), chk.__fold2);
 
-                chk('两条横向色带都具备横向滚动条件（内容溢出 + overflow-x 允许 + touch-action 未被祖先锁成 pan-y）', (function () {
+                chk('两条列表都具备滚动条件：宽屏是 3 列网格 / 竖向列表，手机上都是横滑带', (function () {
                   var out = [], ok = true;
-                  var panes = [['列车色带', 'trainChips', 'train'], ['线路色带', 'lgLines', 'lines']];
-                  panes.forEach(function (p) {
-                    setTab(p[2]);                                   // 各自所在的 tab 默认是隐藏的，先打开
-                    var el = $(p[1]);
-                    if (!el) { ok = false; out.push(p[0] + '缺失'); return; }
-                    var overflowX = getComputedStyle(el).overflowX;
-                    var overflow = el.scrollWidth > el.clientWidth + 1;
-                    var scrollable = overflowX === 'auto' || overflowX === 'scroll';
-                    /* touch-action 沿祖先链取交集：祖先写 pan-y 会把子元素横向平移相交成 none
-                       （那就是用户说的“滑不动”）。 */
-                    var blocked = null;
-                    for (var q = el; q && q !== document.body; q = q.parentElement) {
-                      var ta = getComputedStyle(q).touchAction;
-                      if (ta === 'none' || ta === 'pan-y' || ta === 'pan-up' || ta === 'pan-down') {
-                        blocked = (q.id || q.className || q.tagName) + ':' + ta;
-                        break;
-                      }
-                    }
-                    if (!overflow || !scrollable || blocked) ok = false;
-                    out.push(p[0] + ' ' + el.clientWidth + '<' + el.scrollWidth + ' overflow=' + overflowX +
-                      ' 锁=' + (blocked || '无'));
-                  });
+                  var wide = !sheetMode();
+                  setTab('lines');
+                  var lg = $('lgLines');
+                  var lgStyle = lg ? getComputedStyle(lg) : null;
+                  var lgCols = lgStyle ? lgStyle.gridTemplateColumns.split(' ').filter(function (x) { return x.trim(); }).length : 0;
+                  if (!lg) { ok = false; out.push('线路列表缺失'); }
+                  else if (wide) {
+                    /* 宽屏：三列网格，不应再有横向溢出 */
+                    var gridOk = lgStyle.display === 'grid' && lgCols === 3;
+                    var noHOver = lg.scrollWidth <= lg.clientWidth + 2;
+                    if (!gridOk || !noHOver) ok = false;
+                    out.push('线路(宽屏) 网格=' + lgStyle.display + ' 列数=' + lgCols +
+                      ' 宽 ' + lg.clientWidth + '/' + lg.scrollWidth + ' 无横向溢出=' + noHOver);
+                  } else {
+                    if (!(lg.scrollWidth > lg.clientWidth + 1) || !(lgStyle.overflowX === 'auto' || lgStyle.overflowX === 'scroll')) ok = false;
+                    out.push('线路(手机) 横滑 215<' + lg.scrollWidth + ' overflow=' + lgStyle.overflowX);
+                  }
                   setTab('train');
+                  var tc = $('trainChips');
+                  var tStyle = tc ? getComputedStyle(tc) : null;
+                  if (!tc) { ok = false; out.push('列车列表缺失'); }
+                  else if (wide) {
+                    var vert = tStyle.flexDirection === 'column';
+                    var vOver = tc.scrollHeight > tc.clientHeight + 1;
+                    var rows = Math.round(tc.clientHeight / 56);
+                    if (!vert || !(tStyle.overflowY === 'auto' || tStyle.overflowY === 'scroll') || !vOver || rows < 3 || rows > 7) ok = false;
+                    out.push('切换列车(宽屏) 方向=' + tStyle.flexDirection + ' 可见≈' + rows + ' 行 可纵向滚=' + vOver);
+                  } else {
+                    if (!(tc.scrollWidth > tc.clientWidth + 1)) ok = false;
+                    out.push('切换列车(手机) 横滑 ' + tc.clientWidth + '<' + tc.scrollWidth);
+                  }
+                  /* touch-action 沿祖先链取交集：祖先写 pan-y 会把子元素横向平移相交成 none */
+                  var blocked = null;
+                  for (var q = tc; q && q !== document.body; q = q.parentElement) {
+                    var ta = getComputedStyle(q).touchAction;
+                    if (ta === 'none' || (ta === 'pan-y' && !wide)) { blocked = (q.id || q.className) + ':' + ta; break; }
+                  }
+                  if (blocked) { ok = false; out.push('touch-action 被锁=' + blocked); }
                   chk.__reel = out.join(' · ');
                   return ok;
                 })(), chk.__reel);
@@ -4528,6 +4581,9 @@
     stepTrain: stepTrain, setTarget: setTarget, reset: resetState,
     pointAt: pointAt, kmToMap: kmToMap, recomputeEta: recomputeEta,
     hitStation: hitStation, zoomAt: zoomAt, fitView: fitView, view: view,
+    focusStation: focusStation, openPopup: openPopup, closePopup: closePopup,
+    clampView: clampView, applyView: applyView, updateScaleBar: updateScaleBar,
+    updateLabelScale: updateLabelScale, layoutLabels: layoutLabels, labelScaleOf: function () { return labelScale; },
     applySnap: applySnap, setTab: setTab, renderStationList: renderStationList, sheet: sheet,
     panel: panel, applyPanel: applyPanel, setPanelCollapsed: function (v) { panel.collapsed = !!v; applyPanel(); if (view.fitted) fitView(); layoutLabels(); positionBubbles(); },
     stationKm: stationKm, stationMapS: stationMapS, panBox: panBox, contentBox: contentBox, stage: stage,

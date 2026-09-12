@@ -426,6 +426,36 @@ body {
 }
 .lg-chip i { width: 14px; height: 14px; border-radius: 4px; flex: 0 0 auto; }
 .lg-chip em { font-style: normal; font-size: var(--t-micro); color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.lg-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* 宽屏（iPad / PC）下线路表改用**三列网格**竖向铺开，把横向空间用完（17 条线路 6 行看完）；
+   手机/竖屏抽屉里仍是一条横滑带（窄屏上网格会挤成一团）。 */
+@media (min-width: 760px) and (min-aspect-ratio: 1/1) {
+  .lg-lines {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s1) var(--s2);
+    overflow: visible;
+    scroll-snap-type: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .lg-chip { width: 100%; justify-content: flex-start; border-radius: var(--r-sm); flex-wrap: wrap; row-gap: 0; min-width: 0; overflow: hidden; padding: 6px 9px; }
+  /* 站数换到第二行：三列格子只有 ~65px，一行塞不下「dot + 9号线 + 56 站」 */
+  .lg-chip em { flex: 0 0 100%; margin-left: 0; }
+
+  /* 切换列车：竖向列表（1 列、约 5 行可见），比横滑带好扫，也把竖向空间用起来 */
+  .tchips {
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    max-height: 320px;              /* ≈ 5 行（卡片 ~56 + 间距 8） */
+    scroll-snap-type: y proximity;
+    -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 18px), transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 18px), transparent 100%);
+  }
+  .tchip { width: 100%; max-width: none; }
+}
 .lg-chip.on { border-color: currentColor; background: var(--line-tint); box-shadow: inset 0 0 0 1px currentColor; }
 .lg-chip.off { opacity: .34; }
 
@@ -451,7 +481,7 @@ body {
 .reel.at-both, .tchips.at-both, .lg-lines.at-both { --fade-l: 0px; --fade-r: 0px; }   /* 不需要滑：两头都不淡 */
 
 /* 列车卡（17 列车切换入口）：两行——上排「线路 + 状态」，下排「当前站 → 下一站」。
-   单行卡片在手机上会把站名截成省略号（用户反馈“显示不完”），两行后内容完整且仍可横向滑。 */
+   手机/抽屉里是横滑带；宽屏（iPad/PC）下换成**竖向列表**（1 列，约 5 行可见，其余在列表内滚）。 */
 .tchip {
   display: flex; flex-direction: column; align-items: stretch; gap: 2px;
   flex: 0 0 auto;
