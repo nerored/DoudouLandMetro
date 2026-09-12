@@ -55,6 +55,9 @@
   /* --------------------------------------------------------------- 运行时状态 */
   /* 全局（与列车无关）的运行/视图开关 */
   var ui = { paused: false, mult: 1, follow: false };
+  /* 时间流逝比例：现实 1 秒 = 游戏 TIME_BASE 秒（基础 1:2），面板倍速在此之上再乘 */
+  var TIME_BASE = 2;
+  function timeRatio() { return TIME_BASE * (ui.mult || 1); }
 
   /* 每列车的运行状态；state 始终指向「当前控制的那列车」（trains[activeIdx]） */
   var trains = [];
@@ -1545,7 +1548,7 @@
     setText('hudSpeed', state.v.toFixed(0) + ' km/h');
     setText('hudEta', state.eta != null ? fmtDur(state.eta) : '—');
     setText('tgName', state.target ? M.byId[state.target].zh + ' 站' : '未设置');
-    setText('tgEta', state.eta != null ? fmtDur(state.eta) + '（实时 ' + fmtDur(state.eta / ui.mult) + '）' : '—');
+    setText('tgEta', state.eta != null ? fmtDur(state.eta) + '（实时 ' + fmtDur(state.eta / timeRatio()) + '）' : '—');
     setText('tgStops', state.etaStops ? state.etaStops + ' 站' : '—');
   }
 
@@ -1959,12 +1962,12 @@
      要点：① 一条一条说，上一条 onend/onerror/看门狗 之后再放下一条；
            ② 队列最多积压 3 条，超了丢最旧的（高倍速下不会越积越多）；
            ③ rate 取 clamp(max(1,倍速), 1, 2) —— iOS 对 >2 的语速会截断，宁可用队列排队。 */
-  var speechQ = [], speechBusy = false, speechWatch = null;
+  var speechQ = [], speechBusy = false, speechWatch = null, speechSeq = 0;
 
   function speak(text) {
     if (!audio.on || !text || !('speechSynthesis' in window)) return;
     if (speechQ.length >= 3) speechQ.shift();
-    speechQ.push({ text: text, rate: clamp(Math.max(1, ui.mult), 1, 2) });   // 入队时快照语速
+    speechQ.push({ text: text, rate: clamp(0.95 * (ui.mult || 1), 0.9, 2) });   // 入队时快照语速
     pumpSpeech();
   }
 
@@ -1977,27 +1980,34 @@
     var u;
     try { u = new SpeechSynthesisUtterance(text); } catch (e) { void e; speechQ = []; return; }
     u.lang = 'zh-CN';
-    u.rate = item.rate;
+    /* 语音语速：基础 0.95（略慢一点更清楚），随面板倍速加快，封顶 2（iOS 对 >2 会截断） */
+    u.rate = clamp(0.95 * (ui.mult || 1), 0.9, 2);
     u.pitch = 1.0;
     var v = zhVoice();
     if (v) u.voice = v;
     speechBusy = true;
+    var myId = ++speechSeq;
     function done(kind) {
-      if (!speechBusy) return;
+      if (!speechBusy || myId !== speechSeq) return;      // 已经换成新的一句了，不插手
       speechBusy = false;
       if (speechWatch) { clearTimeout(speechWatch); speechWatch = null; }
       if (kind === 'end') { audio.ttsOK = true; audio.ttsSilent = false; }
       if (kind === 'err') audio.ttsError = 'error';
       updateTtsHint();
-      setTimeout(pumpSpeech, 60);            // 隔一点时间，避免两条粘在一起
+      setTimeout(pumpSpeech, 180);            // 隔久一点，避免两条粘在一起（iOS 上尤其明显）
     }
     u.onstart = function () { audio.ttsOK = true; audio.ttsSilent = false; updateTtsHint(); };
     u.onend = function () { done('end'); };
     u.onerror = function () { done('err'); };
-    /* 看门狗：iOS 上 onend 有时不触发，按预估时长兜底放行队列 */
-    var est = Math.min(15000, 240 * text.length / (u.rate || 1) + 2000);
+    /* 看门狗：iOS 上 onend 有时不触发，按预估时长兜底放行队列。
+       必须带 myId 令牌：否则看门狗会在“下一条已经在说”时把 busy 清掉 → 两条叠读 → 听不清。 */
+    var est = Math.min(15000, 240 * text.length / (u.rate || 1) + 3000);
     if (speechWatch) clearTimeout(speechWatch);
-    speechWatch = setTimeout(function () { speechBusy = false; setTimeout(pumpSpeech, 60); }, est);
+    speechWatch = setTimeout(function () {
+      if (myId !== speechSeq) return;
+      speechBusy = false;
+      setTimeout(pumpSpeech, 180);
+    }, est);
     audio.announcements++;
     try { ss.speak(u); } catch (e2) { speechBusy = false; speechQ = []; }
   }
@@ -2188,7 +2198,7 @@
         $('spEtaLbl').textContent = '列车正停靠本站';
       } else {
         $('spEta').textContent = fmtDur(e.seconds);
-        $('spEtaLbl').textContent = '列车到达该站' + (ui.mult !== 1 ? '（实时 ' + fmtDur(e.seconds / ui.mult) + '）' : '');
+        $('spEtaLbl').textContent = '列车到达该站' + (timeRatio() !== 1 ? '（实时 ' + fmtDur(e.seconds / timeRatio()) + '）' : '');
       }
       $('spStops').textContent = e.stops ? e.stops + ' 站' : '—';
       var plan = e.reversed && e.switched ? '需先驶向终点折返，再在四河站换交路后到达'
@@ -2270,7 +2280,7 @@
       var dtRaw = last ? Math.min(0.12, (t - last) / 1000) : 0;   // 切后台回来不跳变
       last = t;
       if (!ready) return;
-      var dt = dtRaw * (ui.paused ? 0 : ui.mult);
+      var dt = dtRaw * (ui.paused ? 0 : timeRatio());
       if (dt > 0) {
         trains.forEach(function (tr) {
           var left = dt, guard = 0;
@@ -2800,37 +2810,65 @@
       return here.length === 1 && !!b && b.classList.contains('here');
     })(), chk.__lst);
 
-    chk('语音语速随倍速（rate = clamp(max(1,倍速),1,2)：1x→1、5x→2、10x→2，不丢条）', (function () {
+    chk('时间流逝比例：基础 1:2（现实 1s = 游戏 2s），倍速再乘', (function () {
+      var bak = ui.mult;
+      ui.mult = 1; var r1 = timeRatio();
+      ui.mult = 2; var r2 = timeRatio();
+      ui.mult = 10; var r10 = timeRatio();
+      ui.mult = bak;
+      chk.__time = '1x=' + r1 + 'x 2x=' + r2 + 'x 10x=' + r10 + 'x（基础 ' + TIME_BASE + '）';
+      return TIME_BASE === 2 && r1 === 2 && r2 === 4 && r10 === 20;
+    })(), chk.__time);
+
+    chk('语音语速：1x≈0.95（听得清）、2x≈1.9、高倍速封顶 2', (function () {
       var desc = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
-      var saved = [], bakOn = audio.on, bakMult = ui.mult;
+      var q = [], bakOn = audio.on, bakMult = ui.mult;
       var stub = {
         getVoices: function () { return []; },
         cancel: function () { },
-        speak: function (u) {
-          saved.push({ text: u.text, rate: u.rate });
-          if (u.onstart) u.onstart();
-          if (u.onend) setTimeout(u.onend, 0);      // 假装引擎很快说完，让队列继续
-        }
+        speak: function (u) { q.push(u.rate); if (u.onstart) u.onstart(); if (u.onend) setTimeout(u.onend, 0); }
       };
       try { Object.defineProperty(window, 'speechSynthesis', { value: stub, configurable: true, writable: true }); }
       catch (e) { return true; }
       setSound(true);
-      speechQ = []; speechBusy = false;        // 清掉“声音已开启”那条，只测报站
-      saved = [];
-      ui.mult = 1; announce(state, 'open');    // 立即朗读
-      ui.mult = 5; announce(state, 'open');    // 入队（语速在入队时快照）
-      ui.mult = 10; announce(state, 'open');   // 入队
-      var firstRate = saved.length ? saved[0].rate : null;
-      var qRates = speechQ.map(function (x) { return x.rate; });
-      var firstText = saved.length ? String(saved[0].text) : '';
-      chk.__rate = '首条 rate=' + firstRate + ' 文本=' + firstText.slice(0, 12) +
-        ' 入队语速=' + qRates.join(',') + ' 队列=' + speechQ.length;
+      speechQ = []; speechBusy = false;
+      q = [];
+      ui.mult = 1; announce(state, 'open');
+      ui.mult = 2; announce(state, 'closing');
+      ui.mult = 10; announce(state, 'depart');
+      var qr = speechQ.map(function (x) { return x.rate; });
+      chk.__rate = '首条=' + (q[0] || '-') + ' 队列=' + qr.join(',');
       ui.mult = bakMult; setSound(bakOn);
       try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
       speechQ = []; speechBusy = false;
-      return firstRate === 1 && qRates.length === 2 && qRates[0] === 2 && qRates[1] === 2 &&
-        firstText.indexOf('站到了') >= 0;
+      return Math.abs(q[0] - 0.95) < 0.01 && qr.length === 2 &&
+        Math.abs(qr[0] - 1.9) < 0.01 && qr[1] === 2;
     })(), chk.__rate);
+
+    chk('语音不叠读：正在说时再报站只入队，不并发（避免听不清）', (function () {
+      var desc = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
+      var speaks = 0, bakOn = audio.on, bakMult = ui.mult;
+      var stub = {
+        getVoices: function () { return []; },
+        cancel: function () { },
+        speak: function () { speaks++; }          // 故意不触发 onend，模拟 iOS 不回调
+      };
+      try { Object.defineProperty(window, 'speechSynthesis', { value: stub, configurable: true, writable: true }); }
+      catch (e) { return true; }
+      setSound(true);
+      speechQ = []; speechBusy = false; speechSeq++;
+      speaks = 0;
+      ui.mult = 1;
+      announce(state, 'open');
+      announce(state, 'closing');
+      announce(state, 'depart');
+      var ok = speaks === 1 && speechQ.length === 2;
+      chk.__nodup = 'speak 调用=' + speaks + ' 队列=' + speechQ.length;
+      ui.mult = bakMult; setSound(bakOn);
+      try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
+      speechQ = []; speechBusy = false; speechSeq++;
+      return ok;
+    })(), chk.__nodup);
 
     chk('速度选项 = 1x/2x/5x/10x，且高倍速下子步不丢步', (function () {
       var btns = $('segSpeed').querySelectorAll('button');
