@@ -3625,14 +3625,14 @@
       '可见 ' + labelBoxes.length + ' 个标签，最差遮挡 ' + (worst * 100).toFixed(1) + '%' + (bad.length ? ' 超标: ' + bad.join(',') : ''));
 
     chk('刷新 URL 构造：保留原有查询参数（如 selftest=1）且含 _v=', (function () {
-      var out = refreshUrlFor('https://x.test/chengdu-metro-line1/index.html?selftest=1&foo=bar#h', 1234567890);
+      var out = refreshUrlFor('https://x.test/DoudouLandMetro/index.html?selftest=1&foo=bar#h', 1234567890);
       chk.__u1 = out;
       return /[?&]_v=1234567890/.test(out) && /selftest=1/.test(out) && /foo=bar/.test(out) &&
-        /#h$/.test(out) && out.indexOf('/chengdu-metro-line1/index.html') === 0;
+        /#h$/.test(out) && out.indexOf('/DoudouLandMetro/index.html') === 0;
     })(), chk.__u1);
 
     chk('刷新 URL 会替换旧的 _v（不重复累加）', (function () {
-      var a = refreshUrlFor('https://x.test/chengdu-metro-line1/index.html?_v=111&selftest=1', 222);
+      var a = refreshUrlFor('https://x.test/DoudouLandMetro/index.html?_v=111&selftest=1', 222);
       chk.__u2 = a;
       return /_v=222/.test(a) && !/_v=111/.test(a) && /selftest=1/.test(a);
     })(), chk.__u2);

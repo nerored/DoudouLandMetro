@@ -278,7 +278,7 @@ iPad 把它「添加到主屏」后是 standalone 窗口：**没有地址栏、�
    * 拉不到版本（离线 / `file://`）→ 只提示失败，**绝不自动重载**（否则会无限刷新）。
 
 刷新 URL 由 `refreshUrlFor(href, stamp)` 构造：**保留原有查询参数（如 `?selftest=1`）与 hash，仅覆盖 `_v`**，
-并使用当前 `pathname`（在 Pages 子路径 `/chengdu-metro-line1/` 下也正确）。
+并使用当前 `pathname`（在 Pages 子路径 `/DoudouLandMetro/` 下也正确）。
 
 **发版流程**（让版本戳与资源 URL 都更新）：改代码 → `git commit` → `./tools/bump-version.sh` →
 `git add version.json && git commit` → `git push`。改 `bump-version.sh` 里的 `commit` 取“生成时刻的 HEAD”，
@@ -375,16 +375,16 @@ SELFTEST-PASS checks 92 pass 92     (800x600)
 
 ```text
 # ① 等 Pages 构建完成，核对 version.json 的 commit = 那次功能提交
-$ gh api repos/nerored/chengdu-metro-line1/pages/builds/latest --jq '{status,commit}'
+$ gh api repos/nerored/DoudouLandMetro/pages/builds/latest --jq '{status,commit}'
 {"status":"built","commit":"c32b4e8201360e3a205a1ccbbc425a7fc98ddb1e"}
-$ curl -s 'https://nerored.github.io/chengdu-metro-line1/version.json?cb=…'
+$ curl -s 'https://nerored.github.io/DoudouLandMetro/version.json?cb=…'
 { "version": "2026-09-13.0204", "commit": "791e01c", "builtAt": "2026-09-13T02:04:42+08:00" }
 # 791e01c = UI 重构那次功能提交（桌面 dock / 手机抽屉 / 4 个 tab / 站点搜索）
 
 # ② 三视口自检（窗口尺寸已按本机显示缩放补偿：窗口 = 目标 CSS 视口 + (30, 95)）
 $ for S in 1430x995 1054x863 830x695; do
     ALL=1 ./tools/headless-selftest.sh \
-      "https://nerored.github.io/chengdu-metro-line1/index.html?selftest=1&_v=$(date +%s)" $S
+      "https://nerored.github.io/DoudouLandMetro/index.html?selftest=1&_v=$(date +%s)" $S
   done
 SELFTEST-PASS checks 92 pass 92     线上 1400x900（窗口 1430x995）
 SELFTEST-PASS checks 92 pass 92     线上 1024x768（窗口 1054x863）
