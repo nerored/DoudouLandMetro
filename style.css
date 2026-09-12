@@ -257,64 +257,11 @@ body {
 .switch span { flex: 1; }
 
 /* ---------------------------------------------------------------- HUD */
-/* 左上角强制刷新按钮（HTML 覆盖层，不在地图手势层；HUD 给它让出左侧一格） */
-.hard-refresh {
-  position: absolute;
-  z-index: 32;
-  left: calc(8px + var(--sa-l));
-  top: calc(8px + var(--sa-t));
-  min-width: 64px;
-  min-height: var(--tap);
-  padding: 0 10px;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--line-dark);
-  background: rgba(255, 255, 255, .94);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-  cursor: pointer;
-  touch-action: manipulation;
-}
-.hard-refresh:active { background: #e6f0f9; }
-.hard-refresh.busy { color: #8a5a08; border-color: #e8cf9a; background: #fdf6e3; }
-
-/* 顶部中间的“声音开关”（左上角是刷新、右上角是 ☰ 控制） */
-.sound-bar {
-  position: absolute;
-  z-index: 32;
-  top: calc(8px + var(--sa-t));
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  max-width: min(430px, calc(100% - 230px));
-  pointer-events: none;
-}
-.sound-bar .btn {
-  pointer-events: auto;
-  min-width: 132px;
-  background: rgba(255, 255, 255, .94);
-  box-shadow: var(--shadow);
-}
-.sound-bar .tts-note {
-  margin-top: 0;
-  padding: 3px 9px;
-  text-align: center;
-  background: rgba(255, 255, 255, .9);
-  border: 1px solid var(--edge);
-  border-radius: 8px;
-  max-width: 100%;
-}
-.sound-bar .tts-note:empty { display: none; }
-
+/* 刷新/声音按钮已内嵌进左上角 HUD（.btn-mini），这里不再有独立浮层 */
 .hud {
   position: absolute;
-  top: calc(60px + var(--sa-t));      /* 顶部一行留给工具条（刷新/声音/控制） */
-  left: calc(80px + var(--sa-l));     /* 再给左上角“⟳ 刷新”腾位置 */
+  top: calc(8px + var(--sa-t));       /* 顶部缝隙与图例底部缝隙一致（均为 8px + 安全区） */
+  left: calc(8px + var(--sa-l));      /* 左边与图例对齐 */
   padding: 8px 10px;
   border-radius: var(--r);
   background: rgba(255, 255, 255, .90);
@@ -333,15 +280,23 @@ body {
 .hud-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; pointer-events: none; }
 .hud-brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 7px;
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: .02em;
-  color: var(--ink);
-  pointer-events: auto;
+  flex-wrap: wrap;
+  cursor: pointer;
 }
-.hud-brand span { font-size: 11px; font-weight: 500; color: var(--ink-soft); }
+.hud-title { font-size: 15px; font-weight: 800; letter-spacing: .02em; }
+.hud-sub { font-size: 11px; font-weight: 500; color: var(--ink-soft); }
+.hud-actions { display: flex; gap: 6px; margin-left: auto; }
+.btn-mini {
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 0 9px;
+  font-size: 12.5px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: none;
+}
+.hud-actions .btn[aria-pressed="true"] { border-color: var(--line); color: var(--line-dark); background: #eef4fa; }
 .hud-kv { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
 .hud-kv i { font-style: normal; font-size: 11px; color: var(--ink-soft); }
 .hud-kv b { font-size: 14px; font-weight: 700; }

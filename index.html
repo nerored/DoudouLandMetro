@@ -31,16 +31,19 @@
       </g>
     </svg>
 
-    <!-- 顶部工具条：左：强制刷新；中：声音开关；右：☰ 控制（HUD 下移一行给它让位） -->
-    <button id="btnHardRefresh" class="hard-refresh" type="button" title="强制重新拉取整个网页">⟳ 刷新</button>
+    <!-- 刷新 / 声音按钮已内嵌进左上角 HUD（见下方） -->
 
-    <div class="sound-bar">
-      <button id="btnSound" class="btn" type="button" aria-pressed="false">🔇 声音关闭</button>
-      <span id="ttsNote" class="tts-note"></span>
-    </div>
-
+    <!-- 左上角 HUD（豆豆国的地铁）：刷新 / 声音 两个按钮内嵌在牌子里，左边与图例对齐、顶部缝隙与图例底部一致 -->
     <div id="hud" class="hud">
-      <div class="hud-brand" title="点击折叠/展开状态栏">豆豆国的地铁<span>成都地铁 1 · 2 号线示意</span><i class="hud-fold">⌄</i></div>
+      <div class="hud-brand" title="点击折叠/展开状态栏">
+        <span class="hud-title">豆豆国的地铁</span>
+        <span class="hud-sub">成都地铁 1 · 2 号线示意</span>
+        <span class="hud-actions">
+          <button id="btnHardRefresh" class="btn btn-mini" type="button" title="强制重新拉取整个网页">⟳ 刷新</button>
+          <button id="btnSound" class="btn btn-mini" type="button" aria-pressed="false">🔇 声音关</button>
+        </span>
+        <i class="hud-fold">⌄</i>
+      </div>
       <div class="hud-row">
         <span id="hudDir" class="chip chip-dir">往科学城 · 下行</span>
         <span id="hudDoor" class="chip chip-door">车门关闭</span>
@@ -56,6 +59,7 @@
         <span class="hud-kv"><i>速度</i><b id="hudSpeed">0 km/h</b></span>
         <span class="hud-kv"><i>预计到达</i><b id="hudEta">—</b></span>
       </div>
+      <span id="ttsNote" class="tts-note"></span>
     </div>
 
     <div id="legend" class="panel-glass">

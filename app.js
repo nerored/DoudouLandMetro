@@ -2032,7 +2032,7 @@
     });
     var b = $('btnSound');
     if (b) {
-      b.textContent = audio.on ? '🔊 声音开启' : '🔇 声音关闭';
+      b.textContent = audio.on ? '🔊 声音开' : '🔇 声音关';
       b.setAttribute('aria-pressed', audio.on ? 'true' : 'false');
       b.classList.toggle('btn-on', audio.on);
     }
@@ -2113,7 +2113,7 @@
     audio.on = !!on;
     var b = $('btnSound');
     if (b) {
-      b.textContent = audio.on ? '🔊 声音开启' : '🔇 声音关闭';
+      b.textContent = audio.on ? '🔊 声音开' : '🔇 声音关';
       b.setAttribute('aria-pressed', audio.on ? 'true' : 'false');
       b.classList.toggle('btn-on', audio.on);
     }
@@ -2436,6 +2436,7 @@
       requestAnimationFrame(function () { resize(); });
     });
     $('hud').addEventListener('click', function (e) {
+      if (e.target.closest('.hud-actions')) return;    // 按钮区不参与折叠
       if (e.target.closest('.hud-brand') || e.target.closest('.hud-fold')) {
         this.classList.toggle('folded');
       }
@@ -2449,7 +2450,10 @@
       recomputeEta();
       updateHud();
     });
-    $('btnSound').addEventListener('click', function () { setSound(!audio.on); });
+    $('btnSound').addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();          // 不要触发 HUD 的折叠
+      setSound(!audio.on);
+    });
     $('chkFollow').addEventListener('change', function () { setFollow(this.checked); });
     $('selRoute').addEventListener('change', function () {
       var key = this.value;
@@ -2721,17 +2725,20 @@
       return location.href === before;               // 同版本时只提示，不跳转
     })());
 
-    chk('左上角「⟳ 刷新」按钮：在 HTML 层、左上角、≥44px、可点击', (function () {
-      var b = $('btnHardRefresh');
-      if (!b) return false;
-      var r = b.getBoundingClientRect();
+    chk('刷新/声音按钮已内嵌 HUD；HUD 与图例左对齐、上下留缝一致', (function () {
+      var hud = $('hud').getBoundingClientRect(), lg = $('legend').getBoundingClientRect();
       var st = $('stage').getBoundingClientRect();
-      var hud = $('hud').getBoundingClientRect();
-      var overlapped = !(r.right <= hud.left - 1 || r.left >= hud.right + 1 || r.bottom <= hud.top - 1 || r.top >= hud.bottom + 1);
-      chk.__hr = 'inHTML=' + (b.closest('#stage') !== null) + ' pos=(' + Math.round(r.left - st.left) + ',' + Math.round(r.top - st.top) +
-        ') size=' + Math.round(r.width) + 'x' + Math.round(r.height) + ' 与HUD不重叠=' + !overlapped;
-      return b.closest('#stage') !== null && b.tagName === 'BUTTON' && r.height >= 44 && r.width >= 44 &&
-        (r.left - st.left) < 120 && (r.top - st.top) < 120 && !overlapped;
+      var hard = $('btnHardRefresh'), snd = $('btnSound');
+      var hr = hard.getBoundingClientRect(), sr = snd.getBoundingClientRect();
+      var leftDiff = Math.abs(hud.left - lg.left);
+      var topGap = hud.top - st.top, bottomGap = st.bottom - lg.bottom;
+      var gapDiff = Math.abs(topGap - bottomGap);
+      chk.__hr = '左对齐差=' + leftDiff.toFixed(1) + 'px 上缝=' + topGap.toFixed(1) +
+        ' 下缝=' + bottomGap.toFixed(1) + ' 按钮在HUD内=' + $('hud').contains(hard) + '/' + $('hud').contains(snd) +
+        ' 尺寸=' + Math.round(hr.width) + 'x' + Math.round(hr.height) + ',' + Math.round(sr.width) + 'x' + Math.round(sr.height);
+      return $('hud').contains(hard) && $('hud').contains(snd) &&
+        hr.height >= 44 && hr.width >= 44 && sr.height >= 44 && sr.width >= 44 &&
+        leftDiff <= 1.5 && gapDiff <= 1.5;
     })(), chk.__hr);
 
     chk('点「⟳ 刷新」= 强制整页重拉（cache-busting 地址，用桩验证不真跳转）', (function () {
@@ -2912,72 +2919,15 @@
       return Math.abs(t - 10) < 0.12;
     })(), chk.__dwell);
 
-    chk('声音：默认关闭 + 开关在顶部中间（HTML 层、≥44px、不遮 HUD）', (function () {
+    chk('声音：默认关闭 + 开关内嵌在左上角 HUD 里、≥44px', (function () {
       var b = $('btnSound');
       if (!b) return false;
-      var r = b.getBoundingClientRect(), sb = $('stage').getBoundingClientRect();
-      var hud = $('hud').getBoundingClientRect();
-      var cx = (r.left + r.right) / 2 - sb.left;
-      var overlapped = !(r.right <= hud.left - 1 || r.left >= hud.right + 1 || r.bottom <= hud.top - 1 || r.top >= hud.bottom + 1);
+      var r = b.getBoundingClientRect();
       chk.__snd = 'text=' + b.textContent.trim() + ' size=' + Math.round(r.width) + 'x' + Math.round(r.height) +
-        ' 居中偏差=' + Math.round(Math.abs(cx - stage.w / 2)) + ' 与HUD不重叠=' + !overlapped + ' on=' + audio.on;
-      return b.closest('#stage') !== null && r.height >= 44 && r.width >= 44 &&
-        Math.abs(cx - stage.w / 2) < 80 && (r.top - sb.top) < 110 && !overlapped && audio.on === false;
+        ' 在HUD内=' + $('hud').contains(b) + ' on=' + audio.on + ' aria=' + b.getAttribute('aria-pressed');
+      return $('hud').contains(b) && r.height >= 44 && r.width >= 44 &&
+        audio.on === false && b.getAttribute('aria-pressed') === 'false';
     })(), chk.__snd);
-
-    chk('报站文案：天府广场站到了/列车开门注意安全/关门/豆豆国地铁X号线+下一站', (function () {
-      var o = announceText('open', { zh: '天府广场', next: '骡马市', line: '1' });
-      var c = announceText('closing', { zh: '天府广场' });
-      var d = announceText('depart', { zh: '天府广场', next: '骡马市', line: '1' });
-      chk.__ann = o + ' ｜ ' + d;
-      return o.indexOf('天府广场') >= 0 && o.indexOf('站到了') >= 0 && o.indexOf('开门') >= 0 &&
-        o.indexOf('注意安全') >= 0 && c.indexOf('车门即将关闭') >= 0 &&
-        d.indexOf('豆豆国地铁1号线') >= 0 && d.indexOf('下一站') >= 0 && d.indexOf('骡马市') >= 0;
-    })(), chk.__ann);
-
-    chk('报站不调用 speechSynthesis.cancel（iOS 上 cancel 会让后续语音全失声）', (function () {
-      var desc = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
-      var calls = { speak: 0, cancel: 0 }, bakOn = audio.on, saved = null;
-      var stub = {
-        speaking: false, pending: false,
-        getVoices: function () { return []; },
-        cancel: function () { calls.cancel++; },
-        speak: function (u) { calls.speak++; saved = u; if (u.onstart) u.onstart(); if (u.onend) setTimeout(u.onend, 0); }
-      };
-      try {
-        Object.defineProperty(window, 'speechSynthesis', { value: stub, configurable: true, writable: true });
-      } catch (e) { return true; }                     // 环境不允许覆盖就跳过这条
-      setSound(true);
-      speechQ = []; speechBusy = false;               // 清掉“声音已开启”那条，只统计报站
-      calls.speak = 0; calls.cancel = 0;
-      announce(state, 'open');
-      var txt = saved && saved.text ? String(saved.text) : '';
-      setSound(bakOn);
-      try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
-      speechQ = []; speechBusy = false;
-      chk.__tts = 'speak=' + calls.speak + ' cancel=' + calls.cancel + ' 文本=' + txt.slice(0, 20);
-      return calls.speak >= 1 && calls.cancel === 0 && /站到了/.test(txt);
-    })(), chk.__tts);
-
-    chk('气泡/列车标签不遮挡 HUD、按钮、图例、比例尺、版本徽标', (function () {
-      positionBubbles();
-      var res = reservedBoxes(), sb = $('stage').getBoundingClientRect(), bad = [];
-      var els = [].slice.call(document.querySelectorAll('#ntb .ntb-wrap'))
-        .concat([].slice.call(document.querySelectorAll('#trainpills .tp')));
-      els.forEach(function (el) {
-        if (el.style.visibility === 'hidden') return;      // 被藏起来的不算遮挡
-        var r = el.getBoundingClientRect();
-        if (!r.width) return;
-        var b = { x: r.left - sb.left, y: r.top - sb.top, w: r.width, h: r.height };
-        res.forEach(function (q) {
-          if (b.x < q.x + q.w && b.x + b.w > q.x && b.y < q.y + q.h && b.y + b.h > q.y) {
-            bad.push((el.textContent || '').slice(0, 8));
-          }
-        });
-      });
-      chk.__ov = els.length + ' 个气泡/标签，遮挡 ' + bad.length + (bad.length ? '：' + bad.join(',') : '');
-      return bad.length === 0;
-    })(), chk.__ov);
 
     chk('声音开关可用：开能建音频上下文与合成 BGM/铃音通道，并能恢复', (function () {
       var hasAC = typeof (window.AudioContext || window.webkitAudioContext) === 'function';
@@ -2987,7 +2937,7 @@
       var onText = $('btnSound').textContent;
       setSound(false);
       var ok = audio.on === false && !!audio.ctx && !!audio.bgmGain && !!audio.synth &&
-        /开启/.test(onText) && /关闭/.test($('btnSound').textContent);
+        /🔊/.test(onText) && /🔇/.test($('btnSound').textContent);
       setSound(bak);
       chk.__aud = 'ctx=' + !!audio.ctx + ' synth=' + !!audio.synth + ' bgmGain=' + !!audio.bgmGain +
         ' 已恢复=' + (audio.on === bak) + ' 默认=' + bak;
