@@ -98,7 +98,7 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
 
 ## 5. Components
 
-### tabbar（4 个 tab：线路 / 列车 / 导航 / 站点）
+### tabbar（5 个 tab：线路 / 列车 / 导航 / 站点 / 图例）
 - **Structure**: `<div class="tabs" role="tablist">` + `<button class="tab" role="tab" aria-selected>`（图标 + 文字 + 可选计数）
 - **Spacing**: 高 52px，tab 内 gap `--s2`；选中态用 2px 底部条（`--line`）
 - **States**: default（`--ink-soft`）/ hover（背景 `--surface-2`）/ active（`scale(.98)`）/ selected（`--ink` + 底条）/ focus-visible（2px outline）
@@ -151,11 +151,10 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
 - **States**: `folded`（只留品牌行 + 胶囊行）；点品牌行切换
 - **Layout**: `imposter`（绝对定位浮在舞台上），`pointer-events:none`，内部控件单独恢复
 
-### legend（地图左下角图例）
-- **Structure**: 紧凑一行 `站点符号说明`（换乘/普通/端点/在建）+ 版本行 `#verRow` + 折叠箭头；展开后显示版权与底图说明
-- **States**: `folded`（默认只留一行符号说明）
-- **Constraint**: `#verRow` 必须在本元素内（发版查更新的入口）
-- **Layout**: 与 HUD **同左边界**、上下缝隙相等（由现有自检断言钉住）
+### legend（在「图例」tab 里的站点符号说明 + 版本行）
+- **Structure**: 符号网格（换乘 / 普通 / 端点 / 在建·暂停）+ 版本行 `#verRow` + 数据来源与版权
+- **Constraint**: `#verRow` 必须在 `#panel` 内（发版查更新的入口）；**地图上不再有图例浮层**
+- **Layout**: 面板内普通卡片；地图左下角留给比例尺与地图本身
 
 ### reel（横向滑动条）
 - `overflow-x:auto` + `scroll-snap-type: x proximity` + `scrollbar-width: none`；
@@ -201,8 +200,13 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
 4. **站名标签屏幕恒定**：`labelScale = max(0.34, 1/view.k)`（不封顶），数量交给小视口预算 + 防重叠淘汰；
    25% 遮挡阈值不得放宽。
 5. **地图适配范围为可见带**：`fitView` 用 `舞台高 - 抽屉可见高` 做适配，否则竖屏上全网会被抽屉压掉一半。
-6. **线路色只表示线路**：地图上的徽标/色块/轨道/站点用线路色，界面强调色固定 `--line`。
-7. **触控目标 ≥44px**，且每个可点元素都有 hover / active / focus-visible 三态。
+6. **地图浮层只有 HUD / 比例尺 / 指北针**：图例、版本、版权都在面板的「图例」tab（不再压地图）。
+7. **底图道路层按缩放分档**：`k >= CFG.roadsFullZoom` 完整 / `CFG.roadsHideZoom <= k < 上面` 只留主线 /
+   更低整层不画（实测道路层占一帧栅格时间的 52~61%，而降低的只是看不见的描边与亚像素线宽）。
+8. **倒计时一律走锚点**（`anchorMake` / `anchorSec` + 每帧 `paintCountdowns`）：
+   任何“剩余秒数”不得直接写死文本，否则 10x 下会一跳好几秒；切倍速时锚点自愈不跳变。
+9. **关声音 = 立即静音**：清空语音队列 + `speechSynthesis.cancel()` + 令牌作废看门狗。
+10. **触控目标 ≥44px**，且每个可点元素都有 hover / active / focus-visible 三态。
 
 ## 9. Accessibility Constraints & Accepted Debt
 

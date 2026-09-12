@@ -69,6 +69,9 @@
 
 * { box-sizing: border-box; }
 
+/* hidden 属性优先（否则 .ic-btn{display:inline-flex} 这类类名会把 hidden 盖掉） */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -138,9 +141,11 @@ body {
 }
 #map.dragging { cursor: grabbing; }
 
-/* ---- 右侧 dock（宽屏横屏） ---- */
+/* 控制区：两种形态同一套 DOM ——
+   宽屏横屏 = 右侧浮层 dock（宽 --dock-w，可向左滑收起）；手机/竖屏 = 底部抽屉（可上下拖）。
+   收起/展开都只动 transform，不动布局宽度。 */
 #panel {
-  position: relative;
+  position: absolute;
   z-index: 40;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -148,17 +153,43 @@ body {
   min-width: 0;
   min-height: 0;
   background: var(--surface-2);
-  border-left: 1px solid var(--edge);
   overflow: hidden;
+  will-change: transform;
 }
 #app.panel-hidden #panel { display: none; }
+
+/* 宽屏 dock 的左边缘竖向把手：向左滑收起、向右滑展开；收起后它仍留在屏幕右缘 */
+.panel-rail {
+  display: none;
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 34px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0;
+  color: var(--ink-faint);
+  background: var(--surface-2);
+  border: 0;
+  border-right: 1px solid var(--edge);
+  cursor: grab;
+  touch-action: none;
+}
+.panel-rail:active { cursor: grabbing; background: var(--line-tint); }
+.rail-grip { width: 4px; height: 46px; border-radius: var(--r-pill); background: var(--handle); }
+.rail-chev { width: 16px; height: 16px; transition: transform var(--dur-2) var(--ease-out); }
+#app[data-panel="collapsed"] .rail-chev { transform: rotate(180deg); }
 
 .panel-body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
+  /* 不要在这里锁方向：touch-action 会沿祖先链取交集，祖先写 pan-y 会把
+     里面横向色带的 pan-x 相交成 none —— 实测就是“色带滑不动”。
+     交给浏览器按手势主方向自己判（纵向滚面板、横向滚色带）。 */
+  touch-action: auto;
   padding: var(--s3) var(--s3) calc(var(--s4) + var(--sa-b));
   display: flex;
   flex-direction: column;
@@ -193,9 +224,9 @@ body {
 /* ================================================================ Tabs */
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 2px;
-  padding: var(--s1) var(--s2) 0;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  padding: var(--s1) 2px 0;
   background: var(--card);
   border-bottom: 1px solid var(--edge);
 }
@@ -204,9 +235,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--s1);
+  gap: 3px;
   min-height: var(--tab-h);
-  padding: 0 var(--s1);
+  padding: 0 2px;
   font: inherit;
   font-size: var(--t-cap);
   font-weight: 700;
@@ -374,7 +405,8 @@ body {
   scroll-snap-type: x proximity;
   scrollbar-width: none;
   padding-bottom: 2px;
-  touch-action: pan-x;
+  /* 同上：这里也不能写 pan-x（祖先的 pan-y 会把它相交成 none），用 auto 让浏览器判主方向 */
+  touch-action: auto;
 }
 .reel::-webkit-scrollbar, .tchips::-webkit-scrollbar, .lg-lines::-webkit-scrollbar { display: none; }
 .reel > *, .tchips > *, .lg-lines > * { scroll-snap-align: start; }
@@ -404,24 +436,42 @@ body {
   font-size: var(--t-body); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cur-st { flex: 0 0 auto; font-size: var(--t-cap); font-weight: 700; color: var(--ink-soft); }
 
-/* 列车带（17 列车切换入口） */
+/* 横向滑动条（线路色带 / 列车带）：两端用遮罩做渐隐，提示“还能滑”。
+   用 mask 而不是伪元素：伪元素会跟着内容一起滚。at-start / at-end 由 JS 按真实滚动位置切换。 */
+.reel, .tchips, .lg-lines {
+  --fade-l: 0px;
+  --fade-r: 18px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-l),
+                      #000 calc(100% - var(--fade-r)), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-l),
+              #000 calc(100% - var(--fade-r)), transparent 100%);
+}
+.reel.at-scrolled, .tchips.at-scrolled, .lg-lines.at-scrolled { --fade-l: 18px; }
+.reel.at-end, .tchips.at-end, .lg-lines.at-end { --fade-r: 0px; }
+.reel.at-both, .tchips.at-both, .lg-lines.at-both { --fade-l: 0px; --fade-r: 0px; }   /* 不需要滑：两头都不淡 */
+
+/* 列车卡（17 列车切换入口）：两行——上排「线路 + 状态」，下排「当前站 → 下一站」。
+   单行卡片在手机上会把站名截成省略号（用户反馈“显示不完”），两行后内容完整且仍可横向滑。 */
 .tchip {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px;
   flex: 0 0 auto;
   min-height: var(--tap);
-  max-width: 230px;
-  padding: 0 10px;
-  font: inherit; font-size: var(--t-sm);
+  min-width: 148px;
+  max-width: 232px;
+  padding: 6px 10px;
+  font: inherit;
   color: var(--ink);
   background: var(--card);
   border: 1px solid var(--edge); border-radius: var(--r-sm);
   cursor: pointer; text-align: left; touch-action: manipulation;
 }
+.tchip-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .tchip-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
-.tchip-line { font-weight: 700; flex: 0 0 auto; }
-.tchip-pos { flex: 1 1 auto; min-width: 0; color: var(--ink-soft);
+.tchip-line { font-size: var(--t-sm); font-weight: 700; flex: 0 0 auto; }
+.tchip-st { margin-left: auto; flex: 0 0 auto; font-size: var(--t-micro); color: var(--ink-soft);
+  font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tchip-pos { font-size: var(--t-cap); color: var(--ink-soft);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tchip-st { flex: 0 0 auto; font-size: var(--t-micro); color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .tchip.on { border-color: var(--line); background: var(--line-tint); box-shadow: inset 0 0 0 1px var(--line); }
 
 /* 站点列表 */
@@ -473,7 +523,6 @@ body {
 .stlist button.row-btn.here { background: var(--line-tint); border-color: var(--line); }
 .stlist button.row-btn.target { background: var(--accent-tint); border-color: var(--accent); }
 .st-empty { padding: var(--s4) var(--s2); font-size: var(--t-sm); color: var(--ink-soft); text-align: center; }
-
 /* ================================================================ 地图浮层 */
 .panel-glass {
   position: absolute;
@@ -545,43 +594,29 @@ body {
 .chip-door.open { background: #fdecdf; color: #b4530d; }
 .chip-door.closing, .chip-door.opening { background: #fdf6d8; color: #94690a; }
 
-/* 图例（左下角）：与 HUD 同左边界、上下缝隙相等（自检断言钉住） */
-#legend {
-  left: calc(var(--s2) + var(--sa-l));
-  bottom: calc(var(--s2) + var(--sa-b) + var(--sheet-h));
-  z-index: 30;
-  display: flex; flex-direction: column; gap: 5px;
-  padding: 6px var(--s2);
-  font-size: var(--t-cap);
-  color: var(--ink-soft);
-  max-width: min(300px, calc(100% - 100px));
-}
-#legend > * { pointer-events: auto; }
-.lg-fold {
-  display: flex; align-items: center; gap: 4px;
-  padding: 0; margin: 0;
-  font: inherit; font-size: var(--t-cap); font-weight: 700; color: var(--ink);
-  background: transparent; border: 0; cursor: pointer; touch-action: manipulation;
-  min-height: 24px;
-}
-.lg-fold .ic { width: 14px; height: 14px; color: var(--ink-faint); transition: transform var(--dur-2) var(--ease-out); }
-.lg-fold[aria-expanded="true"] .ic { transform: rotate(180deg); }
-.lg-symbols { display: flex; flex-wrap: wrap; gap: 4px 10px; }
-.lg-item { display: inline-flex; align-items: center; gap: 5px; line-height: 1.5; }
-.lg-dot { width: 11px; height: 11px; border-radius: 50%; background: #fff; border: 2px solid var(--line); flex: 0 0 auto; }
-.lg-transfer { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--line); margin: 3px; }
-.lg-term { border-radius: 3px; background: var(--line); }
-.lg-planned { border-radius: 50%; border: 2px dashed #9aa4ae; background: #fff; }
-.lg-note { font-size: var(--t-micro); color: var(--ink-faint); line-height: 1.45; }
+/* 版本行（在「图例」tab 的「版本与更新」卡片里）：点一下检查更新 */
 .lg-ver {
-  cursor: pointer; padding-top: 4px;
-  border-top: 1px solid var(--edge);
-  font-variant-numeric: tabular-nums; min-height: 22px;
+  cursor: pointer; padding: var(--s2);
+  background: var(--surface-2);
+  border: 1px solid var(--edge-soft); border-radius: var(--r-sm);
+  font-size: var(--t-cap);
+  font-variant-numeric: tabular-nums; min-height: var(--tap);
+  display: flex; align-items: center;
 }
-.lg-ver:active { color: var(--ink); }
+
+/* 站点符号图例（在「图例」tab 里） */
+.lg-symbols {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: var(--s2) var(--s3);
+}
+.lg-item { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-sm); color: var(--ink); }
+.lg-dot { width: 13px; height: 13px; border-radius: 50%; background: #fff; border: 3px solid var(--line); flex: 0 0 auto; }
+.lg-transfer { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--line); margin: 4px; }
+.lg-term { border-radius: 3px; background: var(--line); }
+.lg-planned { border-radius: 50%; border: 3px dashed #9aa4ae; background: #fff; }
 
 #scalebar {
-  right: calc(var(--s2) + var(--sa-r));
+  right: calc(var(--s2) + var(--sa-r) + var(--panel-occ, 0px));
   bottom: calc(var(--s2) + var(--sa-b) + var(--sheet-h));
   z-index: 30;
   padding: 5px var(--s2);
@@ -592,33 +627,12 @@ body {
 .sb-label { font-size: var(--t-micro); color: var(--ink-soft); margin-top: 2px; font-variant-numeric: tabular-nums; }
 
 #compass {
-  right: calc(var(--s2) + var(--sa-r));
+  right: calc(var(--s2) + var(--sa-r) + var(--panel-occ, 0px));
   top: calc(var(--s2) + var(--sa-t) + 52px);
   z-index: 30;
   padding: 3px;
 }
 
-/* 面板折叠按钮（地图右上角） */
-.panel-toggle {
-  position: absolute;
-  z-index: 33;
-  top: calc(var(--s2) + var(--sa-t));
-  right: calc(var(--s2) + var(--sa-r));
-  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-  min-height: var(--tap);
-  padding: 0 12px;
-  font: inherit; font-size: var(--t-cap); font-weight: 700; color: var(--ink);
-  background: var(--glass-strong);
-  border: 1px solid var(--edge); border-radius: var(--r-pill);
-  box-shadow: var(--sh-3);
-  cursor: pointer; touch-action: manipulation;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-}
-.panel-toggle:active { background: var(--line-tint); }
-#app:not(.panel-hidden) .panel-toggle { color: var(--line-dark); }
-
-/* ================================================================ 站点悬浮窗 */
 .stpop {
   position: absolute;
   z-index: 50;
@@ -838,13 +852,22 @@ body {
 @keyframes nrpulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 
 /* ================================================================ 响应式 */
-/* 宽屏横屏：右侧 dock（#panel 保持 grid 第二列） */
+/* 宽屏横屏：右侧浮层 dock + 左边缘竖向把手（向左滑收起、向右滑展开） */
 @media (min-width: 760px) and (min-aspect-ratio: 1/1) {
-  #app { grid-template-columns: minmax(0, 1fr) var(--dock-w); }
+  #app { grid-template-columns: minmax(0, 1fr); }
+  #panel {
+    top: 0; right: 0; bottom: 0;
+    width: var(--dock-w);
+    grid-template-rows: auto minmax(0, 1fr);      /* 把手 display:none，只剩 tab + body 两行 */
+    padding-left: 34px;                           /* 给竖向把手让位 */
+    border-left: 1px solid var(--edge);
+    transform: translateX(var(--panel-tx, 0px));
+    transition: transform var(--dur-2) var(--ease-out);
+  }
+  #panel.dragging { transition: none; }
+  .panel-rail { display: flex; }
   .sheet-handle { display: none; }
-  #panel { border-left: 1px solid var(--edge); border-top: 0; border-radius: 0; }
-  #app.panel-hidden { grid-template-columns: minmax(0, 1fr) 0; }
-  :root { --sheet-h: 0px; }
+  #app.panel-hidden #panel { display: none; }
 }
 
 /* 手机 / 竖屏 / 窄窗：底部抽屉（同一个 #panel，绝对定位 + translateY 三档） */
@@ -854,6 +877,7 @@ body {
   #panel {
     position: absolute;
     inset: auto 0 0 0;
+    grid-template-rows: auto auto minmax(0, 1fr);
     height: min(86dvh, 760px);
     border-left: 0;
     border-top: 1px solid var(--edge);
@@ -872,7 +896,6 @@ body {
   .announce { bottom: calc(var(--sheet-h) + 56px + var(--sa-b)); }
   .toast { bottom: calc(var(--sheet-h) + 16px + var(--sa-b)); }
   /* 抽屉模式：地图不需要左侧大留白，让线路铺满 */
-  .panel-toggle { top: calc(var(--s2) + var(--sa-t)); }
 }
 
 /* 极窄（手机竖屏）：收紧浮层尺寸 */

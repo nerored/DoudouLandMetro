@@ -27,9 +27,12 @@
   <g id="ic-sound-on"><path d="M4 9.5h3l4-3.2v11.4l-4-3.2H4z"/><path d="M14.5 9a4.2 4.2 0 0 1 0 6"/><path d="M16.8 6.6a7.4 7.4 0 0 1 0 10.8"/></g>
   <g id="ic-sound-off"><path d="M4 9.5h3l4-3.2v11.4l-4-3.2H4z"/><path d="M14.6 9.6l4.8 4.8M19.4 9.6l-4.8 4.8"/></g>
   <g id="ic-panel"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></g>
+  <g id="ic-info"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle cx="12" cy="7.9" r=".9"/></g>
   <g id="ic-close"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></g>
   <g id="ic-search"><circle cx="11" cy="11" r="6.2"/><path d="M15.6 15.6L20 20"/></g>
   <g id="ic-chevron"><path d="M6.5 9.5l5.5 5.5 5.5-5.5"/></g>
+  <g id="ic-chevron-right"><path d="M9.5 6.5l5.5 5.5-5.5 5.5"/></g>
+  <g id="ic-chevron-left"><path d="M14.5 6.5l-5.5 5.5 5.5 5.5"/></g>
   <g id="ic-train"><rect x="5.5" y="3.5" width="13" height="13" rx="3"/><path d="M5.5 10.5h13M9 20l1.6-3.5M15 20l-1.6-3.5"/><circle cx="9.4" cy="13.6" r=".9"/><circle cx="14.6" cy="13.6" r=".9"/></g>
   <g id="ic-lines"><path d="M5 4v9a4 4 0 0 0 4 4h10"/><circle cx="5" cy="4" r="1.6"/><circle cx="19" cy="17" r="1.6"/><circle cx="5" cy="17" r="1.6"/><path d="M5 17h0"/></g>
   <g id="ic-nav"><path d="M12 3.5l6.5 16.5-6.5-3.6-6.5 3.6z"/></g>
@@ -89,26 +92,6 @@
       </div>
     </div>
 
-    <!-- 左下角图例：站点符号一行 + 版本行（点一下检查更新）；展开看底图说明 -->
-    <div id="legend" class="panel-glass">
-      <button class="lg-fold" id="lgFold" type="button" aria-expanded="false" aria-controls="lgMeta">
-        <span id="lgFoldTxt">图例</span>
-        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-chevron"/></svg>
-      </button>
-      <div class="lg-symbols" id="lgSymbols">
-        <span class="lg-item"><span class="lg-dot lg-transfer"></span>换乘</span>
-        <span class="lg-item"><span class="lg-dot lg-normal"></span>普通</span>
-        <span class="lg-item"><span class="lg-dot lg-term"></span>端点</span>
-        <span class="lg-item"><span class="lg-dot lg-planned"></span>在建/暂停</span>
-      </div>
-      <div class="lg-meta" id="lgMeta" hidden>
-        <div class="lg-note">站点坐标与轨道几何：© OpenStreetMap contributors（ODbL 1.0）；站序/换乘：OpenStreetMap 线路关系。底图为示意，非导航用途。</div>
-      </div>
-      <div class="lg-item lg-ver" id="verRow" role="button" tabindex="0" title="当前版本，点一下检查更新">
-        <span class="muted" id="verText">读取中…</span>
-      </div>
-    </div>
-
     <div id="scalebar" class="panel-glass">
       <div class="sb-bar"><span id="sbFill"></span></div>
       <div class="sb-label" id="sbLabel">2 km</div>
@@ -118,9 +101,7 @@
       <svg viewBox="0 0 40 40" width="40" height="40"><path d="M20 4 L27 30 L20 25 L13 30 Z" fill="#33475c"/><text x="20" y="39" text-anchor="middle" font-size="9" fill="#33475c">N</text></svg>
     </div>
 
-    <button id="btnPanel" class="panel-toggle" type="button" aria-controls="panel" aria-expanded="true">
-      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-panel"/></svg><span class="lbl">控制</span>
-    </button>
+    <!-- 顶部「控制」按钮已移除：宽屏用面板左边缘的滑动把手（#panelRail），手机用底部把手 -->
 
     <!-- ============ 站点悬浮窗：轻点地图上的站点弹出 ============ -->
     <div id="stpop" class="stpop" hidden role="dialog" aria-label="站点信息">
@@ -160,6 +141,13 @@
       </span>
     </button>
 
+    <!-- 宽屏横屏：面板左边缘的竖向把手（拖动/点一下收起，右滑展开） -->
+    <button class="panel-rail" id="panelRail" type="button" aria-controls="panel" aria-expanded="true"
+            aria-label="向左滑收起，向右滑展开控制面板" title="向左滑收起 / 向右滑展开">
+      <span class="rail-grip" aria-hidden="true"></span>
+      <svg class="ic rail-chev" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+    </button>
+
     <div class="tabs" id="tabs" role="tablist" aria-label="控制面板分区">
       <button class="tab" type="button" role="tab" id="tabBtn-lines" aria-controls="tab-lines" aria-selected="false" data-tab="lines">
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-lines"/></svg><span class="lbl">线路</span>
@@ -173,8 +161,10 @@
       <button class="tab" type="button" role="tab" id="tabBtn-stations" aria-controls="tab-stations" aria-selected="false" data-tab="stations">
         <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-list"/></svg><span class="lbl">站点</span>
       </button>
+      <button class="tab" type="button" role="tab" id="tabBtn-about" aria-controls="tab-about" aria-selected="false" data-tab="about">
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-info"/></svg><span class="lbl">图例</span>
+      </button>
     </div>
-
     <!-- 唯一滚动归属：面板主体 -->
     <div class="panel-body" id="panelBody">
 
@@ -185,8 +175,7 @@
           <div id="lgLines" class="lg-lines"></div>
         </div>
         <div class="card">
-          <h2>底图</h2>
-          <p class="hint">站点坐标与轨道几何来自 OpenStreetMap；底图（水系 / 快速路）同样来自 OSM，只作示意，不能用于导航。</p>
+          <h2>全网</h2>
           <div class="kpi-row">
             <span class="kpi"><i>线路</i><b id="statLines">17</b></span>
             <span class="kpi"><i>交路</i><b id="statServices">18</b></span>
@@ -210,7 +199,7 @@
             <span class="kpi"><i>速度</i><b id="curSpeed">0 km/h</b></span>
             <span class="kpi"><i>已运行</i><b id="curOdo">0.00 km</b></span>
             <span class="kpi"><i>目标站</i><b id="tgName">未设置</b></span>
-            <span class="kpi"><i>预计到达</i><b id="tgEta">—</b></span>
+            <span class="kpi"><i>预计到达</i><b id="tgEta">—</b><em id="tgEtaReal"></em></span>
             <span class="kpi"><i>还需经过</i><b id="tgStops">—</b></span>
           </div>
         </div>
@@ -230,8 +219,7 @@
         </div>
 
         <div class="card">
-          <h2>控制</h2>
-          <div class="row">
+          <h2>控制</h2>          <div class="row">
             <button id="btnPlay" class="btn btn-primary" type="button">
               <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-pause"/></svg><span class="lbl">暂停</span>
             </button>
@@ -248,12 +236,7 @@
             </div>
             <label class="switch"><input type="checkbox" id="chkFollow"><span>跟随</span></label>
           </div>
-          <p class="hint" id="timeHint">时间流速：现实 1 秒 = 游戏 2 秒（倍速在此之上再乘）。</p>
-          <div class="row">
-            <button id="btnRefresh" class="btn btn-quiet" type="button">
-              <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-refresh"/></svg><span class="lbl">检查更新</span>
-            </button>
-          </div>
+          <p class="hint" id="timeHint">时间流速：现实 1 秒 = 游戏 2 秒（倍速在此之上再乘）；倒计时按此平滑递减。</p>
         </div>
       </div>
 
@@ -287,6 +270,36 @@
             </button>
           </div>
           <div id="stlist" class="stlist"></div>
+        </div>
+      </div>
+
+      <!-- ============ 图例 / 版本 ============ -->
+      <div class="tabpane" id="tab-about" role="tabpanel" aria-labelledby="tabBtn-about" hidden>
+        <div class="card">
+          <h2>图例</h2>
+          <div class="lg-symbols">
+            <span class="lg-item"><span class="lg-dot lg-transfer"></span>换乘站</span>
+            <span class="lg-item"><span class="lg-dot lg-normal"></span>普通站</span>
+            <span class="lg-item"><span class="lg-dot lg-term"></span>端点站</span>
+            <span class="lg-item"><span class="lg-dot lg-planned"></span>在建 / 暂停运营</span>
+          </div>
+          <p class="hint">线路色只表示线路自身（与官网色号一致）；缩小时站名只留换乘 / 端点站，放大后逐步显示全部。点地图上的站会弹出到达时间与「运行到该站」。</p>
+        </div>
+        <div class="card">
+          <h2>版本与更新</h2>
+          <div class="lg-ver" id="verRow" role="button" tabindex="0" title="当前版本，点一下检查更新">
+            <span class="muted" id="verText">读取中…</span>
+          </div>
+          <div class="row">
+            <button id="btnRefresh" class="btn btn-quiet" type="button">
+              <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-refresh"/></svg><span class="lbl">检查更新</span>
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>数据来源</h2>
+          <p class="hint">站点坐标与轨道几何来自 <b>OpenStreetMap</b>（线路关系里的站序与停靠点）；底图（水系 / 快速路）同样来自 OSM，只作示意，不能用于导航。</p>
+          <p class="hint">© OpenStreetMap contributors，ODbL 1.0（openstreetmap.org/copyright）。</p>
         </div>
       </div>
 
