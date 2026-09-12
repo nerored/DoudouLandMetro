@@ -104,19 +104,47 @@ def rdp(points, tol_m):
 
 
 def stitch(ways):
-    out = []
+    """把关系的 way 拼成一条链。
+    注意：OSM 路由关系里 way 的成员**顺序不可靠**（实测 1 号线按成员顺序拼出 59 km，真实 37 km），
+    所以用「两头最近端点贪心链接」：每次拿端点离链首/链尾最近的未用段接上去，必要时反向。"""
+    segs = []
     for w in ways:
         pts = [(g['lat'], g['lon']) for g in w['geometry']]
-        if len(pts) < 2:
-            continue
-        if not out:
-            out = pts[:]
-            continue
-        if dist_m(out[-1], pts[0]) <= dist_m(out[-1], pts[-1]):
-            out.extend(pts[1:])
+        if len(pts) >= 2:
+            segs.append(pts)
+    if not segs:
+        return []
+
+    def seg_len(s):
+        return sum(dist_m(s[i - 1], s[i]) for i in range(1, len(s)))
+
+    segs.sort(key=seg_len, reverse=True)          # 从最长的一段开始
+    chain = segs.pop(0)
+    gaps = []
+    while segs:
+        bi, brev, battach_head, bd = -1, False, False, float('inf')
+        for i, s in enumerate(segs):
+            d_tail0, d_tail1 = dist_m(chain[-1], s[0]), dist_m(chain[-1], s[-1])
+            d_head0, d_head1 = dist_m(chain[0], s[-1]), dist_m(chain[0], s[0])
+            if d_tail0 < bd:
+                bd, bi, brev, battach_head = d_tail0, i, False, False
+            if d_tail1 < bd:
+                bd, bi, brev, battach_head = d_tail1, i, True, False
+            if d_head0 < bd:
+                bd, bi, brev, battach_head = d_head0, i, False, True
+            if d_head1 < bd:
+                bd, bi, brev, battach_head = d_head1, i, True, True
+        if bi < 0 or bd > 2000:                    # 接不上了（缺口 >2 km）：不再硬凑
+            gaps.append(bd)
+            break
+        s = segs.pop(bi)
+        if brev:
+            s = list(reversed(s))
+        if battach_head:
+            chain = s[:-1] + chain
         else:
-            out.extend(reversed(pts[:-1]))
-    return out
+            chain = chain + s[1:]
+    return chain
 
 
 def poly_len_km(pts):
@@ -153,11 +181,16 @@ def legacy_meta():
 
 
 def main():
+    only = None
+    if len(sys.argv) > 2 and sys.argv[1] == '--lines':
+        only = set(sys.argv[2].split(','))
     legacy = legacy_meta()
     print('   人工元数据（1/2 号线）：%d 站' % len(legacy))
 
     raw = OrderedDict()
     for svc in ORDER:
+        if only is not None and line_key_of(svc) not in only:
+            continue
         p = os.path.join(SRC, '%s.json' % svc)
         if not os.path.exists(p):
             print('  ! 缺 %s，跳过' % svc, file=sys.stderr)
@@ -175,10 +208,28 @@ def main():
         if len(pts) < 2:
             print('  ! %s 轨道拼接失败' % svc, file=sys.stderr)
             continue
+        # 方向校正：链路必须从本交路的首发站开始（贪心拼接的起点可能在中间）
+        first = None
+        for s in d['stops']:
+            if s.get('name') and first is None:
+                first = (s['lat'], s['lon'])
+        if first is not None and dist_m(pts[0], first) > dist_m(pts[-1], first):
+            pts.reverse()
         km = poly_len_km(pts)
         simpl = rdp(pts, TOL_TRACK)
         tracks[svc] = {'pts': simpl, 'km': km}
-        print('   %-8s 轨道 %4d→%-4d 点  %6.2f km' % (svc, len(pts), len(simpl), km))
+        # 合理性校验：轨道长度 ÷ 站间直线距离之和（真实线路约 1.0~1.4，拼接错乱会明显偏大）
+        seq0 = [s['name'] for s in d['stops'] if s.get('name')]
+        coord = {}
+        for s in d['stops']:
+            if s.get('name') and s['name'] not in coord:
+                coord[s['name']] = (s['lat'], s['lon'])
+        direct = sum(dist_m(coord[seq0[i - 1]], coord[seq0[i]]) for i in range(1, len(seq0))
+                     if seq0[i - 1] in coord and seq0[i] in coord) / 1000.0
+        ratio = (km / direct) if direct > 0.5 else 0
+        flag = '' if (ratio == 0 or 1.0 <= ratio <= 1.5) else '  <== 可疑！'
+        print('   %-8s 轨道 %4d→%-4d 点  %6.2f km  (直线 %.1f km, 比 %.2f)%s'
+              % (svc, len(pts), len(simpl), km, direct, ratio, flag))
 
     # ---- 站点（按中文站名去重）----
     stations = OrderedDict()
@@ -218,7 +269,13 @@ def main():
     def shift_pt(p):
         return [round(p[0] + off_x, 1), round(p[1] + off_y, 1)]
 
-    # 站点投影到「它真正经过的那个交路」的轨道上
+    # 站点投影到「它真正经过的那个交路」的轨道上    def track_for(nm, line_key):
+        for svc in ORDER:
+            if line_key_of(svc) == line_key and nm in stops_of.get(svc, []) and svc in tracks:
+                return svc
+        return None
+
+    # 站点投影到「它真正经过的那个交路」的轨道上（支线站不要投到主线上去）
     def track_for(nm, line_key):
         for svc in ORDER:
             if line_key_of(svc) == line_key and nm in stops_of.get(svc, []) and svc in tracks:
