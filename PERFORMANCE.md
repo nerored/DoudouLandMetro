@@ -678,6 +678,29 @@ CHECK: PASS（静态资源版本号与 version.json / __BUILD_VERSION 完全一�
 截到了半边渲染（一边空地图/一边缺面板）。现改为**等 `#trains .car-body` 画出 `d` 再点暂停**；
 本次四档对比都是修好后的结果。
 
+**线上复核（bump 到 `2026-09-13.2326` / commit `33d5c14`，Pages built `b23b8be`，经代理 0.3~0.6s RTT）**：
+
+```
+$ bash tools/check-version-sync.sh https://nerored.github.io/DoudouLandMetro/index.html
+version.json : version=2026-09-13.2326 commit=33d5c14
+index.html   : ?v=(1 个) = 2026-09-13.2326  | __BUILD_VERSION=2026-09-13.2326 | __BUILD_COMMIT=33d5c14
+CHECK: PASS（静态资源版本号与 version.json / __BUILD_VERSION 完全一致）
+
+线上请求数: {style.css:1, data.js:1, app.js:1, manifest.json:1, icon-32:1, icon-180:1}   ← 无重复 CSS、启动无 version.json
+开始时刻(ms): {style.css:1183, data.js:1183, app.js:1183}                                ← 与 HTML TTFB(1178ms) 同时开始（被扫描器立即发现）
+首列车 1838 ms（改前同日同口径实测 3368 ms，−45%）· 自检 105/105 × 1180x820 / 390x844
+负载快照: 跑前 0.73/0.79/0.78 → 跑后 1.21/0.90/0.82（邻居 docker 任务开始起，本次窗口基本干净）
+```
+
+### 5.4.8 顺带修掉的测量工具坑（本批）
+
+| 坑 | 症状 | 修法 |
+|---|---|---|
+| 探针泄漏 Windows 无头 Edge | 每次运行留一个“挂着页面在跑”的实例，累计 13 个、峰值整机 177 个 msedge，污染了一批数据 | 结束前 CDP `Browser.close` + 按 profile 兑底清理 + 核对残留为 0（不为 0 则 `exit 4`） |
+| 重负载无感知（`EXP=2` 被别人的残留进程搞坏过） | 数字异常大却不知为何 | **跑前守卫**：Windows 有 headless msedge / 有 docker build / load1>4 → `exit 3/5` 报错退出；报告里记跑前/跑后 `loadavg` |
+| `perf-ab2.sh` 的 `PREACT` 未加引号 | 带空格的 selector 被拆成多参数，**筛选压根没点上**，一行 A/B 数据作废 | 改成 `PREACT="$pre"`；状态类场景先核对控件状态（如 `#lgLines .lg-chip.on`）再信数据 |
+| 截图就绪竞态 | `#btnPlay` 在静态 HTML 里就有 → 截到半成品（空地图 / 缺面板） | 改为等 `#trains .car-body` 有 `d` 再点暂停 |
+
 ### 5.4.6 **新发现（下一批优先项）**：放大档的卡顿在浏览器侧栅格/合成，不在 JS
 
 `zoom k=7 跟随` 档（1280×800）实测：
