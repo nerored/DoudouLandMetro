@@ -957,7 +957,8 @@
   /* 列车重绘间隔（秒）：降到返回 Infinity 就是不重绘。暂停/切后台为 Infinity；
      拖动/缩放/切车等需要立即生效的地方调 invalidateTrains()。 */
   var trainsDirty = true;
-  function invalidateTrains() { trainsDirty = true; }
+  var drawEpoch = 0;                    // 每次 invalidateTrains() 自增：强制整车队重画一遍
+  function invalidateTrains() { trainsDirty = true; drawEpoch++; }
   function trainsInterval() {
     if (ui.paused || document.hidden === true) return Infinity;
     if (view.k < CFG.lodK) return 1 / CFG.lodHz;
@@ -968,14 +969,25 @@
   /* 逐列车绘制（贴在各自线路上） */
   function renderTrains() {
     var total = CFG.cars;
+    /* “没动就不重画”阀值：屏幕位移 < 0.25px 就不值得重算几何+写 DOM
+       （全网适配档 k≈0.21 时 0.25px ≈ 24 m，列车 16.7 m/s → 约 1.4 s 才需要重画一次）*/
+    var eps = clamp(0.25 / Math.max(view.k, 0.01), 0.02, 2.0);
     trains.forEach(function (tr, ti) {
       var grp = trainGroups[ti];
       if (!grp) return;
       /* 被图例筛掉的线路：整列既不算几何也不写 DOM（显示/隐藏由 CSS 的 .line-off 负责）。
          图例变化时 applyLineFilter() 会 invalidateTrains()，重新打开会补一帧。 */
       if (!lineVisible(ROUTES[tr.routeKey].lineKey)) return;
+      var spec = specOf(tr);
+      var ld = tr._ld;
+      var doorQ = Math.round(tr.door * 50);          // 门状态按 1/50 量化（开门动画中会连续变化）
+      var moved = !ld || ld.epoch !== drawEpoch || ld.routeKey !== tr.routeKey ||
+        ld.dir !== tr.dir || ld.spec !== spec || ld.doorQ !== doorQ ||
+        Math.abs(tr.posKm - ld.km) >= ld.eps;
+      if (!moved) return;
+      tr._ld = { epoch: drawEpoch, km: tr.posKm, dir: tr.dir, routeKey: tr.routeKey, spec: spec, doorQ: doorQ, eps: eps };
       var route = ROUTES[tr.routeKey];
-      var spec = specOf(tr), CL = spec.carLen, CG = spec.carGap, HW = spec.carHW;
+      var CL = spec.carLen, CG = spec.carGap, HW = spec.carHW;
       total = spec.cars;
       var sHead = kmToMap(route, tr.posKm);
       var dir = tr.dir;
@@ -3308,9 +3320,7 @@
       }
       updateNextMarks(dtRaw);
       updateTrainPills();
-      positionBubbles();        updateNextMarks(dtRaw);
-        updateTrainPills();
-        positionBubbles();
+      positionBubbles();
       followStep(dtRaw);
       hudAcc += dtRaw;
       if (hudAcc > 0.12) {
