@@ -837,6 +837,7 @@ body {
 #world .junction { fill: #fff; stroke: var(--line); stroke-width: 3; }
 
 #world .platform { fill: #cfc9bb; opacity: .55; }
+#world .platform.tram { fill: #cbd8bd; opacity: .6; }
 #world .st { fill: #fff; stroke: var(--line); stroke-width: 3; }
 #world .st.term { fill: var(--line); stroke: #fff; stroke-width: 2.5; }
 #world .st.ring { fill: #fff; stroke: var(--line); stroke-width: 3; }
@@ -865,6 +866,16 @@ body {
 @keyframes trainpulse { 0%, 100% { fill-opacity: .78; } 50% { fill-opacity: 1; } }
 /* 描边一律按「车厢尺寸的比例」给：车身只有 6 单位宽，用 1.4 单位描边在大缩放下会把车涂成一块深色 */
 #world .car-body { fill: #f7fafd; stroke: #3f5567; stroke-width: 0.6; }
+/* 有轨电车（.train.tram）换一种涂装：车身直接用线路色铺满（地铁是白车身 + 线路色腰线），
+   窗/门改浅色 —— 与地铁的“白车加彩条”一眼分得开，仍然是同一条线路的颜色 */
+#world .train.tram .car-body { fill: var(--line); stroke: #2b3a12; stroke-width: 0.7; }
+#world .train.tram.active .car-body { stroke: #14200a; stroke-width: 0.95; }
+#world .train.tram .car-stripe { fill: #ffffff; opacity: .92; }
+#world .train.tram .car-roof { fill: #d7e6b4; }
+#world .train.tram .car-win { fill: #eaf4fb; stroke: #ffffff; stroke-width: .3; }
+#world .train.tram .car-door-leaf { fill: #dbe7f2; stroke: #ffffff; stroke-width: .3; }
+#world .train.tram .car-gap { fill: #1e2a09; }
+#world .train.tram .car-nose, #world .train.tram .car-tail { fill: #22303d; }
 #world .train.active .car-body { stroke: #16283a; stroke-width: 0.9; }
 #world .train:not(.active) .car-body { opacity: .93; }
 #world .train-sel { fill: none; stroke-width: 2; stroke-dasharray: 4 3.5; opacity: .85; }

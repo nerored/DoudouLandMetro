@@ -52,12 +52,20 @@ LINE_INFO = OrderedDict([
     ('27', ('成都地铁 27 号线', '#00A4E0', True)),
     ('30', ('成都地铁 30 号线', '#E3718F', False)),
     ('S3', ('市域铁路 S3 资阳线', '#858686', False)),
+    # 有轨电车（route=tram）：标志色取自 OSM 关系的 colour 标签 #6A911A（苹果绿）
+    ('T2', ('成都有轨电车蓉2号线', '#6A911A', True)),
 ])
-# 交路 -> 线路 key（1 号线两个交路）
-SERVICE_LINE = {'1main': '1', '1branch': '1'}
-ORDER = ['1main', '1branch'] + [k for k in LINE_INFO if k != '1']
+# 交路 -> 线路 key（1 号线两个交路；有轨电车主线 T2 + 支线 T2B 属同一条线路）
+SERVICE_LINE = {'1main': '1', '1branch': '1', 'T2': 'T2', 'T2B': 'T2'}
+ORDER = ['1main', '1branch'] + [k for k in LINE_INFO if k != '1'] + ['T2B']
 LOOP_LINES = {'7'}                       # 环线：到终点绕回起点，不折返
-KIND = {'S3': '市域铁路'}                 # 非地铁线路的标注
+KIND = {'S3': '市域铁路', 'T2': '有轨电车'}   # 非地铁线路的标注（显示时不能叫“地铁”）
+# 显示短名与紧凑徽标：地铁就是「N 号线」/「1」，有轨电车要写出“有轨电车”，徽标用“蓉2”
+LINE_SHORT = {'T2': '有轨电车蓉2号线'}
+LINE_BADGE = {'T2': '蓉2'}
+# OSM 关系的站点成员顺序与运营方向相反的交路（蓉2主线 10490620 的标签是郫县西站→成都西站，
+# 但成员是从成都西站开始列的；官方向序是郫县西站→成都西站，所以这里翻一下）
+REVERSE_STOPS = {'T2'}
 
 # OSM 上缺 name:en 的车站（少数新站只有中文名）→ 人工补齐英文名。
 # 命名风格跟官方一致：站名用拼音，道路用 “X Road / X Avenue”（对照 OSM 里已有的
@@ -68,6 +76,12 @@ EN_FALLBACK = {
     '红莲': 'Honglian',
     '蓝家店': 'Lanjiadian',
     '黄忠': 'Huangzhong',
+}
+
+# 与有轨电车蓉2号线换乘、但站名对不上的车站（站外换乘，取最接近的地铁站）
+#   交大犀浦校区 ≈ 地铁 6 号线 兴业北街站（实测约 290 m）；其余（望丛祠/天河路/成都西站）靠同名自动合并
+TRAM_META = {
+    '交大犀浦校区': {'tr': ['6']},
 }
 
 
@@ -214,6 +228,8 @@ def main():
         if not d.get('stops') or not d.get('ways'):
             print('  ! %s 数据为空，跳过' % svc, file=sys.stderr)
             continue
+        if svc in REVERSE_STOPS:            # 关系成员顺序与运营方向相反 → 翻正
+            d['stops'] = list(reversed(d['stops']))
         raw[svc] = d
 
     # ---- 轨道 ----
@@ -315,6 +331,7 @@ def main():
         svc = track_for(nm, lk) or (lk if lk in tracks else None)
         pos = shift_pt(project(st['lat'], st['lon']))
         lm = legacy.get(nm, {})
+        tm = TRAM_META.get(nm, {})
         rec = OrderedDict()
         rec['id'] = lm.get('id') or ('s%03d' % (len(st_out) + 1))
         rec['zh'] = nm
@@ -325,7 +342,7 @@ def main():
         rec['lon'] = round(st['lon'], 5)
         rec['lines'] = st['lines']
         tr = [k for k in st['lines'] if k != lk]
-        for extra in lm.get('tr', []):
+        for extra in lm.get('tr', []) + tm.get('tr', []):
             if extra not in st['lines'] and extra not in tr:
                 tr.append(extra)
         rec['tr'] = tr          # 总是写（可能为空数组），应用侧直接 tr.length 不会挂
@@ -350,7 +367,8 @@ def main():
         name, color, verified = LINE_INFO[lk]
         entry = lines_out.setdefault(lk, OrderedDict([
             ('key', lk), ('name', name),
-            ('short', (lk + '号线') if lk.isdigit() else lk),
+            ('short', LINE_SHORT.get(lk) or ((lk + '号线') if lk.isdigit() else lk)),
+            ('badge', LINE_BADGE.get(lk) or lk),
             ('color', color), ('colorVerified', verified),
             ('services', []),
         ]))

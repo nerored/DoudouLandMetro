@@ -34,6 +34,11 @@
     carLen: 13,            // 车厢长度（地图单位，示意夸张；8 节共 113.1 < stub 120）
     carGap: 1.3,           // 车厢间隙
     carHW: 3.0,            // 车厢半宽（总宽 6.0 < 轨道带 10.5，列车画在色带里、两侧露线路色）
+    /* 有轨电车（蓉2号线，阿尔斯通 Citadis 302 低地板 5 车编组、车长约 32.6 m）：
+       比地铁**短得多、单节也短**，一眼能看出不是地铁；车厢总长 46.6 单位（地铁 113.1） */
+    tram: { cars: 5, carLen: 8.6, carGap: 0.9, carHW: 2.6 },
+    tramPlatHalf: 15,      // 电车站台比地铁站台小一圈（图元上也要能区分）
+    tramPlatHW: 6.0,
     platHalf: 20,          // 站台长度的一半（地图单位）
     platHW: 8.5,           // 站台半宽
     stub: 120,             // 端点站外的折返线长度（地图单位，要能容下整列车）
@@ -356,9 +361,24 @@
   /* 注意：JS 对象会把整数型 key 排到前面（'2','3'… 会排在 '1main' 前面），
      所以默认交路与列车顺序不能直接用 Object.keys，要按 M.lines 的顺序来。 */
   var DEFAULT_ROUTE = ROUTES['1main'] ? '1main' : ROUTE_KEYS[0];
-  var LINES = (M.lines || []).map(function (l) { return { key: l.key, name: l.name, short: l.short, color: l.color }; });
+  var LINES = (M.lines || []).map(function (l) {
+    return { key: l.key, name: l.name, short: l.short, badge: l.badge || l.key, kind: l.kind || '', color: l.color };
+  });
   var LINE_BY_KEY = {};
   LINES.forEach(function (l) { LINE_BY_KEY[l.key] = l; });
+  /* 线路分「地铁 / 有轨电车 / 市域铁路」三类：有轨电车在**任何显示处**都不能叫地铁（用户要求）。
+     short = 显示全名（有轨电车蓉2号线），badge = 紧凑徽标（蓉2 / 1 / S3） */
+  function lineKind(key) { return (LINE_BY_KEY[key] && LINE_BY_KEY[key].kind) || ''; }
+  function isTram(key) { return lineKind(key) === '有轨电车'; }
+  function lineBadge(key) { return LINE_BY_KEY[key] ? (LINE_BY_KEY[key].badge || key) : key; }
+  /* 报站/图例用的“品类名”：地铁1号线 / 有轨电车蓉2号线 / 市域铁路S3资阳线 */
+  function lineVoiceTag(key) {
+    var l = LINE_BY_KEY[key];
+    if (!l) return key + ' 号线';
+    if (l.kind === '有轨电车') return l.short;
+    if (l.kind) return (l.name || l.short).replace(/\s+/g, '');
+    return '地铁' + l.key + '号线';
+  }
 
   /* 同线路多条交路的“分叉站” = 两条交路站序的最长公共前缀末站（1 号线为四河） */
   var LINE_SWITCH = {};
@@ -367,6 +387,9 @@
     var a = ROUTES[line.services[0].key].ids, b = ROUTES[line.services[1].key].ids, n = 0;
     while (n < a.length && n < b.length && a[n] === b[n]) n++;
     if (n > 0) LINE_SWITCH[line.key] = a[n - 1];
+    /* 支线不从主线起点引出的情况（有轨电车蓉2：支线从主线中段的 新业路 引出，两交路没有公共前缀）：
+       取「短交路的首站」作为换乘/切换站，它必须也在另一条交路的站序里 */
+    else if (b[0] && a.indexOf(b[0]) >= 0) LINE_SWITCH[line.key] = b[0];
   });
   var JUNCTION_ID = LINE_SWITCH['1'] || 'sihe';
 
@@ -587,9 +610,12 @@
     M.stations.forEach(function (st) {
       servicesContaining(st.id).forEach(function (k) {
         var i = ROUTES[k].ids.indexOf(st.id);
+        /* 站台尺寸按线路品类：地铁宽站台 / 有轨电车小而窄的站台（图元上也要能区分） */
+        var ph = isTram(ROUTES[k].lineKey) ? CFG.tramPlatHalf : CFG.platHalf;
+        var pw = isTram(ROUTES[k].lineKey) ? CFG.tramPlatHW : CFG.platHW;
         svg('path', {
-          class: 'platform', 'data-st': st.id,
-          d: bandPath(ROUTES[k], ROUTES[k].mapAt[i] + CFG.platHalf, ROUTES[k].mapAt[i] - CFG.platHalf, 0, CFG.platHW, 10)
+          class: 'platform' + (isTram(ROUTES[k].lineKey) ? ' tram' : ''), 'data-st': st.id,
+          d: bandPath(ROUTES[k], ROUTES[k].mapAt[i] + ph, ROUTES[k].mapAt[i] - ph, 0, pw, 10)
         }, gPlat);
       });
       var big = (st.lines && st.lines.length > 1) || (st.tr && st.tr.length);
@@ -640,10 +666,12 @@
         pills = svg('g', { class: 'lbl-tr' }, grp);
         var x = 0;
         st.tr.forEach(function (t) {
-          svg('rect', { class: 'lbl-tr-bg', x: x, y: 14, width: 13, height: 12, rx: 3.5 }, pills);
-          var txt = svg('text', { x: x + 6.5, y: 23, 'text-anchor': 'middle' }, pills);
-          txt.textContent = t;
-          x += 15;
+          /* 紧凑徽标：地铁只写线号（6/9）；有轨电车这类品类要能一眼看出是电车，写「有轨电车」 */
+          var txt1 = isTram(t) ? '有轨电车' : String(t);
+          var w0 = 5 + 8.4 * txt1.length;
+          svg('rect', { class: 'lbl-tr-bg', x: x, y: 14, width: w0, height: 12, rx: 3.5 }, pills);
+          svg('text', { x: x + w0 / 2, y: 23, 'text-anchor': 'middle' }, pills).textContent = txt1;
+          x += w0 + 2;
         });
         pillsH = 16;
       }
@@ -858,11 +886,12 @@
   /* ============================================================= 4. 列车 */
   var trainGroups = [];
 
-  /* 每列车一个 group（8 节车厢）；色带颜色由 group 上的 --line 决定 */
+  /* 每列车一个 group（地铁 8 节 / 有轨电车 5 节）；色带颜色由 group 上的 --line 决定 */
   function buildTrains() {
     var wrap = svg('g', { id: 'trains' }, world);
     trains.forEach(function (tr, ti) {
-      var g = svg('g', { class: 'train', 'data-train': ti }, wrap);
+      var spec = specOf(tr);
+      var g = svg('g', { class: 'train' + (isTram(ROUTES[tr.routeKey].lineKey) ? ' tram' : ''), 'data-train': ti }, wrap);
       g.style.setProperty('--line', ROUTES[tr.routeKey].color);
       var shadow = svg('g', { class: 'train-shadow', transform: 'translate(2.2,3.2)' }, g);
       var halo = svg('g', { class: 'train-halo' }, g);
@@ -870,9 +899,9 @@
       var sel = svg('circle', { class: 'train-sel', r: 9 }, g);
       var cars = svg('g', null, g);
       var els = [];
-      for (var i = 0; i < CFG.cars; i++) {
+      for (var i = 0; i < spec.cars; i++) {
         var car = svg('g', null, cars);
-        var last = i === CFG.cars - 1;
+        var last = i === spec.cars - 1;
         var bodyCls = 'car-body' + (i === 0 ? ' head' : (last ? ' tail' : ''));
         els.push({
           halo: svg('path', null, halo),
@@ -892,6 +921,13 @@
       regLine(ROUTES[tr.routeKey].lineKey, g);
     });
   }
+
+  /* 每列车按**线路品类**取几何：地铁 8 节（CFG），有轨电车 5 节短车（CFG.tram）。
+     其余绘制/交互/动效完全同一套（只是参数不同） */
+  function specOf(tr) {
+    return isTram(ROUTES[tr.routeKey].lineKey) ? CFG.tram : CFG;
+  }
+  function totalLen(sp) { return sp.cars * sp.carLen + (sp.cars - 1) * sp.carGap; }
 
   /* 车头：前 22% 用 smoothstep 收成流线鼻锥（半宽 0.42 → 1），折角圆润、一眼是车头 */
   function noseProfile(i) {
@@ -919,6 +955,8 @@
       var grp = trainGroups[ti];
       if (!grp) return;
       var route = ROUTES[tr.routeKey];
+      var spec = specOf(tr), CL = spec.carLen, CG = spec.carGap, HW = spec.carHW;
+      total = spec.cars;
       var sHead = kmToMap(route, tr.posKm);
       var dir = tr.dir;
       /* 视口裁剪：不在可视区域内的列车不重绘也不显示（线路多/列车多时很重要） */
@@ -930,40 +968,40 @@
       grp.g.classList.toggle('active', ti === activeIdx);
       for (var i = 0; i < total; i++) {
         var isHead = i === 0, isTail = i === total - 1;
-        var fS = sHead - dir * i * (CFG.carLen + CFG.carGap);
-        var rS = fS - dir * CFG.carLen;
+        var fS = sHead - dir * i * (CL + CG);
+        var rS = fS - dir * CL;
         /* 车厢参数 u：0 = 本节车的车头端，1 = 车尾端（bandPath 从 u=0 开始扫到 u=1） */
         var uAt = function (u) { return fS + (rS - fS) * u; };
         var nProf = noseProfile(i), tProf = tailProfile(i, total);
         var prof = function (u) { return nProf(u) * tProf(u); };
         var el = grp.els[i];
-        el.body.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW, 16, prof));
+        el.body.setAttribute('d', bandPath(route, fS, rS, 0, HW, 16, prof));
         /* 光晕/阴影比车身宽，别盖住车身细节：光晕宽度≈轨道带宽（10.2 vs 10.5），
            这样在全网缩放下列车仍是一段看得见的白色，在大缩放下就是车身周围的一圈白边 */
-        el.halo.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.70, 12, prof));
-        el.shadow.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.62, 12, prof));
+        el.halo.setAttribute('d', bandPath(route, fS, rS, 0, HW * 1.70, 12, prof));
+        el.shadow.setAttribute('d', bandPath(route, fS, rS, 0, HW * 1.62, 12, prof));
         /* 涂装：沿车顶中心线的线路色带（两端各让 10% 给车头/车尾端面） */
-        el.stripe.setAttribute('d', bandPath(route, uAt(0.10), uAt(0.90), 0, CFG.carHW * 0.15, 8));
+        el.stripe.setAttribute('d', bandPath(route, uAt(0.10), uAt(0.90), 0, HW * 0.15, 8));
         /* 车顶设备：两台空调机组（就画在中心线上，幅度小） */
         el.roof.setAttribute('d',
-          bandPath(route, uAt(0.30), uAt(0.415), 0, CFG.carHW * 0.32, 3) +
-          bandPath(route, uAt(0.585), uAt(0.70), 0, CFG.carHW * 0.32, 3));
+          bandPath(route, uAt(0.30), uAt(0.415), 0, HW * 0.32, 3) +
+          bandPath(route, uAt(0.585), uAt(0.70), 0, HW * 0.32, 3));
         /* 侧窗：一条连续窗带（车头让出驾驶室、车尾让出尾端驾驶室），不再是 4 个小方窗 */
         var wFrom = isHead ? 0.30 : 0.10;
         var wTo = isTail ? 0.78 : 0.90;
-        var wOff = CFG.carHW * 0.72, wHalf = CFG.carHW * 0.10;
+        var wOff = HW * 0.72, wHalf = HW * 0.10;
         var wins = bandPath(route, uAt(wFrom), uAt(wTo), wOff, wHalf, 6) + ' ' +
           bandPath(route, uAt(wFrom), uAt(wTo), -wOff, wHalf, 6) + ' ';
         if (isHead) {
           /* 驾驶室挡风玻璃：横跨车头的浅色带，跟着鼻锥一起收窄 */
-          wins += bandPath(route, uAt(0.135), uAt(0.205), 0, CFG.carHW, 3,
+          wins += bandPath(route, uAt(0.135), uAt(0.205), 0, HW, 3,
             function (u) { return 0.70 * nProf(u); }) + ' ';
         }
         el.win.setAttribute('d', wins);
         /* 车门：每节车两对双开门，门叶叠在窗带上把它打断（真车就是这样）；
            开门动画仍是 door/doorPhase 那套，这里只是把位移换成新车长的比例 */
-        var doorHalf = CFG.carLen * 0.075;
-        var dOpen = tr.door * CFG.carLen * 0.075;
+        var doorHalf = CL * 0.075;
+        var dOpen = tr.door * CL * 0.075;
         var doorUs = isHead ? [0.42, 0.76] : [0.26, 0.72];
         var doors = '', gaps = '';
         doorUs.forEach(function (u) {
@@ -972,30 +1010,30 @@
             doors += bandPath(route, seg[0], seg[1], wOff, wHalf, 3) + ' ';
             doors += bandPath(route, seg[0], seg[1], -wOff, wHalf, 3) + ' ';
           });
-          if (dOpen > 0.05) gaps += bandPath(route, c + dOpen * 0.92, c - dOpen * 0.92, 0, CFG.carHW * 1.02, 3) + ' ';
+          if (dOpen > 0.05) gaps += bandPath(route, c + dOpen * 0.92, c - dOpen * 0.92, 0, HW * 1.02, 3) + ' ';
         });
         el.door.setAttribute('d', doors);
         /* 车厢之间的风挡/车钩缝：每节车尾留一条深色缝（末节车除外，那里是尾端） */
-        if (!isTail) gaps += bandPath(route, uAt(0.955), uAt(1), 0, CFG.carHW * 0.98, 2) + ' ';
+        if (!isTail) gaps += bandPath(route, uAt(0.955), uAt(1), 0, HW * 0.98, 2) + ' ';
         el.gap.setAttribute('d', gaps);
         /* 车头：深色驾驶室端面（跟着鼻锥收窄）+ 两颗前照灯；
            车尾：同样的深色端面 + 红色尾灯，两端一眼能分开 */
         if (el.nose) {
-          el.nose.setAttribute('d', bandPath(route, uAt(0.01), uAt(0.13), 0, CFG.carHW, 6,
+          el.nose.setAttribute('d', bandPath(route, uAt(0.01), uAt(0.13), 0, HW, 6,
             function (u) { return 0.86 * nProf(u); }));
           el.lamp.setAttribute('d',
-            bandPath(route, uAt(0.045), uAt(0.085), CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+            bandPath(route, uAt(0.045), uAt(0.085), HW * 0.26, HW * 0.12, 2,
               function (u) { return 0.80 * nProf(u); }) + ' ' +
-            bandPath(route, uAt(0.045), uAt(0.085), -CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+            bandPath(route, uAt(0.045), uAt(0.085), -HW * 0.26, HW * 0.12, 2,
               function (u) { return 0.80 * nProf(u); }) + ' ');
         }
         if (el.tail) {
-          el.tail.setAttribute('d', bandPath(route, uAt(0.87), uAt(0.99), 0, CFG.carHW, 6,
+          el.tail.setAttribute('d', bandPath(route, uAt(0.87), uAt(0.99), 0, HW, 6,
             function (u) { return 0.86 * tProf(u); }));
           el.lamp.setAttribute('d',
-            bandPath(route, uAt(0.905), uAt(0.945), CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+            bandPath(route, uAt(0.905), uAt(0.945), HW * 0.26, HW * 0.12, 2,
               function (u) { return 0.86 * tProf(u); }) + ' ' +
-            bandPath(route, uAt(0.905), uAt(0.945), -CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+            bandPath(route, uAt(0.905), uAt(0.945), -HW * 0.26, HW * 0.12, 2,
               function (u) { return 0.86 * tProf(u); }) + ' ');
         }
       }
@@ -1014,9 +1052,10 @@
     var best = -1, bestD = 30;
     trains.forEach(function (tr, ti) {
       var route = ROUTES[tr.routeKey];
+      var spec = specOf(tr);
       var sHead = kmToMap(route, tr.posKm);
-      for (var i = 0; i < CFG.cars; i++) {
-        var c = pointAt(route, sHead - tr.dir * (i * (CFG.carLen + CFG.carGap) + CFG.carLen / 2));
+      for (var i = 0; i < spec.cars; i++) {
+        var c = pointAt(route, sHead - tr.dir * (i * (spec.carLen + spec.carGap) + spec.carLen / 2));
         var d = Math.hypot(c.x * view.k + view.tx - p.x, c.y * view.k + view.ty - p.y);
         if (d < bestD) { bestD = d; best = ti; }
       }
@@ -1197,7 +1236,7 @@
             var soonest = null;
             it.list.forEach(function (x) { if (x.anchor && (!soonest || x.anchor.sec < soonest.sec)) soonest = x.anchor; });
             b.innerHTML = '<span class="ntb-badge ntb-multi">' + it.list.map(function (x) {
-              return ROUTES[x.tr.routeKey].lineKey;
+              return lineBadge(ROUTES[x.tr.routeKey].lineKey);
             }).join('·') + '</span><b>' + it.list.length + ' 趟列车</b>' +
               '<i>' + (soonest ? fmtDur(Math.ceil(anchorSec(soonest))) : '—') + '</i>';
             var sumEl = b.querySelector('i');
@@ -1205,7 +1244,7 @@
             b.title = '点一下展开全部到站气泡';
           } else {
             b.innerHTML = '<span class="ntb-badge" style="background:' + ROUTES[it.tr.routeKey].color + '">' +
-              ROUTES[it.tr.routeKey].lineKey + '</span><b>' +
+              lineBadge(ROUTES[it.tr.routeKey].lineKey) + '</span><b>' +
               (it.anchor ? fmtDur(Math.ceil(anchorSec(it.anchor))) : (it.sec != null ? fmtDur(it.sec) : (it.note || '—'))) + '</b>';
             var tEl = b.querySelector('b');
             if (it.anchor && tEl) cdBubbles.push({ el: tEl, a: it.anchor, last: -1, wrap: wrap });
@@ -1278,10 +1317,11 @@
       b.className = 'lg-chip';
       b.setAttribute('data-line', l.key);
       b.setAttribute('aria-pressed', 'false');
-      /* 宽屏下是三列网格（格子只有 ~65px）：名字取紧凑写法（S3 这种长名只写线号，全名在 title 里），
+      /* 宽屏下是三列网格（格子只有 ~65px）：名字取紧凑写法（S3 / 有轨电车这种长名只写品类，线号与全名在 title/次行里），
          站数换到第二行。 */
-      var chipTxt = /^[0-9]+号线$/.test(l.short) ? l.short : l.key;
-      b.innerHTML = '<i style="background:' + l.color + '"></i><b class="lg-name">' + chipTxt + '</b><em>' + n + ' 站</em>';
+      var chipTxt = l.kind ? l.kind : (/^[0-9]+号线$/.test(l.short) ? l.short : l.key);
+      var chipSub = l.kind ? (l.badge + ' · ' + n + ' 站') : (n + ' 站');
+      b.innerHTML = '<i style="background:' + l.color + '"></i><b class="lg-name">' + chipTxt + '</b><em>' + chipSub + '</em>';
       b.title = l.name + '（' + n + ' 站，点一下只看该线，可多选）';
       b.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -2326,7 +2366,7 @@
       hudCache.__badge = line.color;
       ['hudLineBadge', 'sheetBadge', 'curBadge'].forEach(function (id) {
         var el = $(id);
-        if (el) { el.style.background = line.color; el.textContent = line.short.replace('号线', '').replace('市域铁路 ', ''); }
+        if (el) { el.style.background = line.color; el.textContent = lineBadge(line.key); }
       });
     }
   }
@@ -2457,8 +2497,8 @@
         ids.slice(from).forEach(function (id, k) {
           var seq = from + k;
           var noText = (si > 0 && line.services.length > 1)
-            ? ('0' + line.key + '|Y' + (seq - from + 1))
-            : (line.short.replace('号线', '') + '|' + String(seq + 1).padStart(2, '0'));
+            ? (lineBadge(line.key) + '|Y' + (seq - from + 1))
+            : (lineBadge(line.key) + '|' + String(seq + 1).padStart(2, '0'));
           var row = stationRow(id, noText);
           if (row) body.appendChild(row);
         });
@@ -2490,7 +2530,7 @@
       hits.slice(0, 60).forEach(function (s) {
         var lk = (s.lines && s.lines[0]) || '1';
         var l = LINE_BY_KEY[lk];
-        var row = stationRow(s.id, l ? l.short.replace('号线', '').replace('市域铁路 ', '') : lk);
+        var row = stationRow(s.id, l ? lineBadge(l.key) : lk);
         if (row) box.appendChild(row);
       });
     }
@@ -2954,7 +2994,8 @@
     if (kind === 'arrive') return ctxObj.zh + '站到了，请下车，注意列车与站台之间的空隙';
     if (kind === 'closing') return '车门即将关闭，请勿靠近车门';
     if (kind === 'depart') {
-      var tag = ctxObj.loop ? '地铁' + ctxObj.line + '号线' + ctxObj.loopDir + '列车' : '地铁' + ctxObj.line + '号线';
+      var base = lineVoiceTag(ctxObj.line);
+      var tag = ctxObj.loop ? base + ctxObj.loopDir + '列车' : base;
       return '欢迎乘坐豆豆国' + tag + '，下一站 ' + ctxObj.next;
     }
     return '';
@@ -2990,7 +3031,7 @@
     var text = kind === 'open' ? announceText('open', ctxObj)
       : kind === 'arrive' ? announceText('arrive', ctxObj)
         : kind === 'closing' ? announceText('closing', ctxObj)
-          : (after ? announceText('depart', ctxObj) : '欢迎乘坐豆豆国地铁' + ctxObj.line + '号线，本次列车已到达终点站');
+          : (after ? announceText('depart', ctxObj) : '欢迎乘坐豆豆国' + lineVoiceTag(ctxObj.line) + '，本次列车已到达终点站');
     /* 字幕：不管能不能出声都显示报站内容（iOS 主屏 standalone 对 TTS 有限制时也有反馈） */
     showAnnounce(text);
     if (!audio.on) return;
@@ -3059,8 +3100,8 @@
     $('spZh').textContent = st.zh;
     $('spEn').textContent = st.en || '';
     var tr = (st.lines && st.lines.length > 1)
-      ? (st.lines.join('/') + ' 号线换乘')
-      : ((st.tr && st.tr.length) ? (st.tr.map(function (k) { return k + ' 号线'; }).join('、')) : '无');
+      ? (st.lines.map(lineShort).join(' · ') + ' 换乘')
+      : ((st.tr && st.tr.length) ? (st.tr.map(function (k) { return lineShort(k); }).join('、')) : '无');
     if (st.planned && st.planned.length) tr += '（在建：' + st.planned.join('、') + '）';
     $('spTr').textContent = tr;
     $('spKm').textContent = stationKm(id).toFixed(2) + ' km' + (st.status && st.status !== '运营中' ? ' · ' + st.status : '');
@@ -3329,10 +3370,7 @@
         if (kk) switchService(kk, true);
       }
     }
-    if (map.adv) {
-      var left = Math.min(parseFloat(map.adv) || 0, 20000);
-      while (left > 1e-6) { var sub = Math.min(left, 0.05); stepTrain(state, sub); left -= sub; }
-    }
+    if (map.train) { var ti = parseInt(map.train, 10) - 1; if (setActive(ti)) activateSideEffects(); }
     if (map.door) {
       state.phase = 'dwell'; state.phaseT = CFG.openT + CFG.holdT * 0.5;
       state.v = 0; state.door = 1; state.doorPhase = 'open';
@@ -3341,13 +3379,23 @@
     if (map.k) zoomAt(stage.w / 2, stage.h / 2, (parseFloat(map.k) || 1) / view.k);
     if (map.target) setTarget(map.target);
     if (map.pop) openPopup(map.pop, null);
-    if (map.train) { var ti = parseInt(map.train, 10) - 1; if (setActive(ti)) activateSideEffects(); }
     if (map.sound) setSound(map.sound !== '0');
     if (map.speak) speak(decodeURIComponent(map.speak));
     if (map.panel === 'hide') {
       panel.collapsed = true;
       applyPanel();
     }
+    /* adv 放最后：先按 train/route/target 把“当前控制列车与目标”设好，再推演，
+       否则推演的是默认那列车、也看不到目标导航的效果 */
+    if (map.adv) {
+      var left = Math.min(parseFloat(map.adv) || 0, 20000);
+      while (left > 1e-6) { var sub = Math.min(left, 0.05); stepTrain(state, sub); left -= sub; }
+      updateHud();
+    }
+    /* 参数里 k=xx 是在 stage 还是 0×0 时应用的（调试参数在首次 resize 之前就跑），
+       缩放锚点会偏，跟随的阻尼收敛又要好几帧 → 截图前直接 snap 一下（否则出图里什么都看不见） */
+    if (ui.follow) followStep(0, true);
+    renderTrains();
   }
 
   function bindControls() {
@@ -3620,6 +3668,25 @@
     }
     chk('点击支线站（五根松）可到达并在四河换交路',
       hits === 1 && sim2.routeKey === '1branch', '耗时 ' + fmtDur(t2) + '，交路 ' + sim2.routeKey);
+
+    /* 有轨电车：支线从主线**中段**的 新业路 引出（两交路没有公共前缀），目标仁和要在新业路切交路 */
+    chk('有轨电车支线目标（仁和）在新业路切交路并到达', (function () {
+      var simT = cloneState();
+      simT.routeKey = 'T2';
+      simT.curId = ROUTES['T2'].ids[0];
+      simT.posKm = ROUTES['T2'].kmAt[0];
+      var renheId = sidOf('仁和');
+      simT.dir = 1; simT.nextIdx = 1; simT.target = renheId;
+      simT.aOpened = true; simT.aClosing = true; simT.aDepart = true;
+      var tT = 0, hitT = 0, atSwitch = '';
+      while (tT < 20000 && hitT < 1) {
+        stepTrain(simT, 0.25); tT += 0.25;
+        if (simT.routeKey === 'T2B' && !atSwitch) atSwitch = M.byId[simT.curId].zh;
+        if (simT.curId === renheId && simT.phase === 'dwell') hitT++;
+      }
+      chk.__tramBranch = '耗时 ' + fmtDur(tT) + '，切换站 ' + atSwitch + '，交路 ' + simT.routeKey;
+      return hitT === 1 && simT.routeKey === 'T2B' && atSwitch === '新业路';
+    })(), chk.__tramBranch);
 
     /* 跨线路：交给跑那条线的那列车（不瞬移当前车） */
     chk('跨线路目标交给跑那条线的列车（不瞬移当前车）', (function () {
@@ -4076,16 +4143,98 @@
       return same && clicked && enough;
     })(), chk.__spd);
 
-    chk('渲染元素齐备（全部车站/标签 + 每线一列 8 车厢）',
+    chk('渲染元素齐备（全部车站/标签 + 每线一列、车厢数按线路品类：地铁 8 / 有轨电车 5）',
       Object.keys(stationEls).length === M.stations.length && labelEls.length === M.stations.length &&
-      trainGroups.length === trains.length && trainGroups.every(function (g) { return g.els.length === 8; }),
+      trainGroups.length === trains.length &&
+      trains.every(function (tr, i) { return trainGroups[i].els.length === specOf(tr).cars; }),
       Object.keys(stationEls).length + '/' + labelEls.length + '/' + trainGroups.length + '×' +
         (trainGroups[0] ? trainGroups[0].els.length : 0));
 
-    chk('每列车 8 节车厢，且整列车能停在端点折返段内',
-      CFG.cars === 8 && trainGroups.every(function (g) { return g.els.length === 8; }) &&
-      (CFG.cars * CFG.carLen + (CFG.cars - 1) * CFG.carGap) < CFG.stub,
-      '车长合计 ' + f2(CFG.cars * CFG.carLen + (CFG.cars - 1) * CFG.carGap) + ' < 折返段 ' + CFG.stub);
+    chk('地铁 8 节、有轨电车 5 节，且整列车能停在端点折返段内',
+      CFG.cars === 8 && CFG.tram.cars === 5 &&
+      trains.every(function (tr, i) {
+        var sp = specOf(tr);
+        return trainGroups[i].els.length === sp.cars && totalLen(sp) < CFG.stub;
+      }) &&
+      totalLen(CFG) < CFG.stub && totalLen(CFG.tram) < CFG.stub,
+      '地铁 ' + f2(totalLen(CFG)) + ' / 电车 ' + f2(totalLen(CFG.tram)) + ' < 折返段 ' + CFG.stub);
+
+    /* ---------------- 有轨电车蓉2号线（数据 / 命名 / 换乘 / 图元） ---------------- */
+    function sidOf(zhName) {
+      for (var q = 0; q < M.stations.length; q++) if (M.stations[q].zh === zhName) return M.stations[q].id;
+      return null;
+    }
+    function rgbNums(s) {
+      var m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(s || '');
+      return m ? [+m[1], +m[2], +m[3]] : null;
+    }
+    function hexNums(h) {
+      var n = parseInt(String(h).slice(1), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    }
+    function sameRgb(a, b) { return !!a && !!b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2]; }
+
+    var tramLine = LINE_BY_KEY['T2'], tramMain = ROUTES['T2'], tramBranch = ROUTES['T2B'];
+    chk('有轨电车蓉2号线：主线 22 站（郫县西站→成都西站）/ 支线 14 站（新业路→仁和）',
+      !!tramLine && !!tramMain && !!tramBranch &&
+      tramMain.ids.length === 22 && tramBranch.ids.length === 14 &&
+      M.byId[tramMain.ids[0]].zh === '郫县西站' && M.byId[tramMain.ids[21]].zh === '成都西站' &&
+      M.byId[tramBranch.ids[0]].zh === '新业路' && M.byId[tramBranch.ids[13]].zh === '仁和' &&
+      Math.abs(tramMain.kmLength - 27.4) < 1.5 && Math.abs(tramBranch.kmLength - 11.9) < 1.2,
+      '主线 ' + f2(tramMain.kmLength) + ' km / 支线 ' + f2(tramBranch.kmLength) + ' km');
+
+    chk('电车与地铁同站合并（望丛祠/天河路/成都西站）+ 交大犀浦校区≈6 号线（站外）',
+      ['望丛祠', '天河路', '成都西站'].every(function (n) {
+        var st = M.byId[sidOf(n)];
+        return !!st && st.lines.indexOf('T2') >= 0 && st.lines.length > 1;
+      }) && (M.byId[sidOf('交大犀浦校区')].tr || []).indexOf('6') >= 0,
+      '望丛祠=' + M.byId[sidOf('望丛祠')].lines.join('/') +
+        ' 天河路=' + M.byId[sidOf('天河路')].lines.join('/') +
+        ' 成都西站=' + M.byId[sidOf('成都西站')].lines.join('/'));
+
+    chk('命名口径：有轨电车不叫地铁（线路名/短名/报站文案）',
+      tramLine.name === '成都有轨电车蓉2号线' && tramLine.short === '有轨电车蓉2号线' &&
+      tramLine.badge === '蓉2' && tramLine.kind === '有轨电车' &&
+      lineShort('T2') === '有轨电车蓉2号线' && lineVoiceTag('T2') === '有轨电车蓉2号线' &&
+      !/地铁/.test(lineVoiceTag('T2')) &&
+      /豆豆国有轨电车蓉2号线/.test(announceText('depart',
+        { zh: '天河路', next: '龙吟', line: 'T2', loop: false, loopDir: '' })),
+      lineVoiceTag('T2') + ' | ' + announceText('depart',
+        { zh: '天河路', next: '龙吟', line: 'T2', loop: false, loopDir: '' }));
+
+    chk('图例与站点列表都写「有轨电车」（不出现「地铁」）', (function () {
+      var chip = null;
+      Array.prototype.forEach.call(document.querySelectorAll('#lgLines .lg-chip'), function (c) {
+        if (c.getAttribute('data-line') === 'T2') chip = c;
+      });
+      var chipTxt = chip ? chip.textContent : '';
+      var grp = '';
+      Array.prototype.forEach.call(document.querySelectorAll('#stlist .grp'), function (g) {
+        if (/有轨电车/.test(g.textContent) && /(主线|支线)/.test(g.textContent)) grp = g.textContent;
+      });
+      chk.__tramName = 'chip=' + chipTxt + ' | 列表=' + grp;
+      return !!chip && /有轨电车/.test(chipTxt) && /蓉2/.test(chipTxt) && !/地铁/.test(chipTxt) &&
+        /有轨电车蓉2号线/.test(grp) && !/地铁/.test(grp);
+    })(), chk.__tramName);
+
+    chk('电车图元与地铁区分：同一套车厢管线，但电车 5 节短车 + 车身直接用线路色', (function () {
+      var ti = -1, mi = -1;
+      trains.forEach(function (tr, i) {
+        if (ROUTES[tr.routeKey].lineKey === 'T2' && ti < 0) ti = i;
+        if (ROUTES[tr.routeKey].lineKey === '1' && mi < 0) mi = i;
+      });
+      var tg = ti >= 0 ? trainGroups[ti].g : null, mg = mi >= 0 ? trainGroups[mi].g : null;
+      var nTram = ti >= 0 ? trainGroups[ti].els.length : -1;
+      var nMetro = mi >= 0 ? trainGroups[mi].els.length : -1;
+      var fTram = tg ? rgbNums(getComputedStyle(tg.querySelector('.car-body')).fill) : null;
+      var fMetro = mg ? rgbNums(getComputedStyle(mg.querySelector('.car-body')).fill) : null;
+      var ok = !!tg && !!mg && tg.classList.contains('tram') && !mg.classList.contains('tram') &&
+        nTram === CFG.tram.cars && nMetro === CFG.cars &&
+        sameRgb(fTram, hexNums(tramLine.color)) && !sameRgb(fTram, fMetro);
+      chk.__tramVeh = '电车 ' + nTram + ' 节 fill=' + (fTram || []).join(',') +
+        ' / 地铁 ' + nMetro + ' 节 fill=' + (fMetro || []).join(',');
+      return ok;
+    })(), chk.__tramVeh);
 
     chk('停站时间 = 10 秒（开门 1.2 + 上下客 7.0 + 关门 1.2 + 待发 0.6）',
       Math.abs(CFG.openT + CFG.holdT + CFG.closeT + CFG.readyT - 10) < 0.01,
@@ -4197,8 +4346,9 @@
       var halos = document.querySelectorAll('#trains .train-halo path');
       var pills = document.querySelectorAll('#trainpills .tp');
       var hasState = Array.prototype.every.call(pills, function (p) { return p.textContent.trim().length > 2; });
+      var carsWanted = trains.reduce(function (a, tr) { return a + specOf(tr).cars; }, 0);
       chk.__emp = halos.length + ' 光晕 / ' + pills.length + ' 标签 / ' + hasState;
-      return halos.length === want * CFG.cars && pills.length === want && hasState &&
+      return halos.length === carsWanted && pills.length === want && hasState &&
         document.querySelectorAll('#trainpills .tp.on').length === 1;
     })(), chk.__emp);
 
@@ -4298,8 +4448,9 @@
         var d = 1e9;
         trains.forEach(function (tr) {
           var route = ROUTES[tr.routeKey], sh = kmToMap(route, tr.posKm);
-          for (var i = 0; i < CFG.cars; i++) {
-            var c = pointAt(route, sh - tr.dir * (i * (CFG.carLen + CFG.carGap) + CFG.carLen / 2));
+          var spec = specOf(tr);
+          for (var i = 0; i < spec.cars; i++) {
+            var c = pointAt(route, sh - tr.dir * (i * (spec.carLen + spec.carGap) + spec.carLen / 2));
             d = Math.min(d, Math.hypot(c.x * view.k + view.tx - q[0], c.y * view.k + view.ty - q[1]));
           }
         });

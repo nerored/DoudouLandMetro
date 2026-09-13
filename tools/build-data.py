@@ -97,7 +97,7 @@ STATION_META = OrderedDict([
     ('五根松',        dict(id='wugensong', en='Wugensong', form='地下岛式', tr=[])),
     # ---- 2 号线（车站形式百科表未给，留空待核实） ----
     ('犀浦',          dict(id='xipu', en='Xipu Railway Station', tr=['6'])),
-    ('天河路',        dict(id='tianhelu', en='Tianhe Road', tr=['蓉2有轨电车'])),
+    ('天河路',        dict(id='tianhelu', en='Tianhe Road')),        # 蓉2号线支线换乘由 build-lines.py 按同名站自动合并给出
     ('百草路',        dict(id='baicaolu', en='Baicao Road', tr=[])),
     ('金周路',        dict(id='jinzhoulu', en='Jinzhou Road', tr=[])),
     ('金科北路',      dict(id='jinkebeilu', en='Jinke North Road', tr=[])),

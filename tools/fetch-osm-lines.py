@@ -47,6 +47,11 @@ LINES = {
     '27': [12123402],                  # 石佛 => 蜀鑫路
     '30': [19970754],                  # 双流机场2航站楼东 → 龙泉驿火车站南
     'S3': [11516374],                  # 资阳北站 → 福田（市域铁路）
+    # ---- 有轨电车（route=tram，轨道 way 的标签是 railway=tram）----
+    # 主线只取一个方向：OSM 里有 T2 双方向（10490620 郫县西站→成都西站、9321938 反向），
+    # 反向的关系不能与正向拼，取 10490620；支线 T2B 同理取正向 10490762（新业路→仁和）。
+    'T2':  [10490620],                 # 郫县西站 → 成都西站（有轨电车蓉2号线主线）
+    'T2B': [10490762],                 # 新业路 → 仁和（蓉2号线支线）
 }
 
 
@@ -99,7 +104,7 @@ def parse(d, rel_id):
         if not w:
             continue
         t = w.get('tags', {})
-        if t.get('railway') not in ('subway', 'rail', 'light_rail', None):
+        if t.get('railway') not in ('subway', 'rail', 'light_rail', 'tram', None):
             continue
         geom = []
         for nid in w.get('nodes', []):

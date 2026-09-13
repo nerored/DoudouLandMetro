@@ -120,12 +120,12 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
 - **Accessibility**: 原生 button；文字 13.5px；长名省略号
 - **Layout**: `stack`，父级 `.panel-body` 是滚动归属
 
-### train-8car（地图上的 8 车厢列车）
-- **Structure**: 每线一列一个 `<g class="train">`，里面 8 节车厢 `<g>`；每节只有**少量** path：
+### train-8car（地图上的列车：地铁 8 车厢 / 有轨电车 5 节）
+- **Structure**: 每线一列一个 `<g class="train">`，里面 N 节车厢 `<g>`；每节只有**少量** path：
   `car-body`（车体）/ `car-stripe`（线路色带）/ `car-roof`（车顶空调机组）/ `car-win`（侧窗带）/ `car-door-leaf`（门叶）/
   `car-gap`（门洞 + 车厢间风挡缝）/ `car-nose`·`car-lamp`（仅车头）/ `car-tail`·`car-lamp.rear`（仅车尾）
   + 每节的 `train-halo` / `train-shadow`。每节的细节必须合并进少量 `d`（一条 path 装多条子路径），
-  禁止「一节车几十个 path」——17 列车 × 8 节 = 136 节，元素数必须是同量级。
+  禁止「一节车几十个 path」——18 列车 ×（地铁 8 / 电车 5）节，元素数必须是同量级。
 - **画法约定（展开视图）**: 车体是一条沿线路弧长的带（`bandPath()`，永远贴着轨道切线）；
   **中心线画车顶**（线路色带 + 两台空调机组），**两侧画侧窗带与车门**；两端各有驾驶室端面。
 - **车头 vs 车尾必须一眼可辨**: 车头 = 前 22% 用 smoothstep 收成流线鼻锥（最窄 0.42 半宽）
@@ -134,16 +134,20 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
 - **细节**: 侧窗是**连续窗带**（不是一个个小方窗）；每节车两对双开门，门叶**叠在窗带上把它打断**
   （真车就是这样），开门动画仍是 `door` / `doorPhase` / `CFG.openT|holdT|closeT` 那套，语义不变；
   车厢之间留深色风挡/车钩缝。车顶空调机组幅度要小，别和车门糊成一块。
-- **几何（`CFG`，全部可调）**: `carLen 13` / `carGap 1.3` / `carHW 3.0` → 长:宽 ≈ 2.2:1，
-  总宽 6.0 单位 < 轨道带 10.5 单位（列车画在色带里，两侧露出线路色）。
-  **硬约束**: `cars*carLen + (cars-1)*carGap < stub`（端折返段要放得下整列车，自检里有断言）；
-  `platHW 8.5` 仍比车宽，站台不会被车盖住。
+- **几何（`CFG` / `CFG.tram`，全部可调）**: 地铁 `carLen 13` / `carGap 1.3` / `carHW 3.0` → 长:宽 ≈ 2.2:1，
+  总宽 6.0 单位 < 轨道带 10.5 单位（列车画在色带里，两侧露线路色）；
+  **有轨电车（`CFG.tram`）`cars 5` / `carLen 8.6` / `carGap 0.9` / `carHW 2.6`**（整列 46.6 单位，约为地铁的 41%），
+  几何按**线路品类**选（`specOf(train)` 看 `kind === '有轨电车'`）：同一套渲染/交互/动效，只是参数不同。
+  **硬约束**: `cars*carLen + (cars-1)*carGap < stub`（端折返段要放得下整列车，两种编组都有自检断言）；
+  `platHW 8.5` 仍比车宽，站台不会被车盖住；电车站台另给小一号的 `CFG.tramPlatHalf / tramPlatHW`。
+- **品类涂装**: 地铁 = 白车身 + 线路色腰线；有轨电车（`.train.tram`）= **车身直接用线路色铺满 + 浅色窗带**，
+  车顶机组与色带改浅色 —— 一眼分得开，且两者颜色都取所属线路的 `color`（线路色只表示线路）。
 - **保留**: 点击命中（`hitTrainDist`）、`active` 高亮、halo/shadow、选中圈 `train-sel`、静音/视口裁剪逻辑。
 
-### train-card（每线一列，共 17 张，横向 reel）
+### train-card（每线一列，共 18 张，横向 reel）
 - **Structure**: `<button class="tchip"><i class="tchip-dot"></i><b class="tchip-line">6号线</b><span class="tchip-pos">望丛祠 → 兰家沟</span></button>`
 - **Variants**: `on`（当前控制列车：线路色描边 + 浅底）
-- **Layout**: `reel`（横向滑动）；**这是 17 列车唯一的切换入口**，所以不能藏进二级菜单
+- **Layout**: `reel`（横向滑动）；**这是 18 列车唯一的切换入口**，所以不能藏进二级菜单
 
 ### kpi（键值对）
 - **Structure**: `<span class="kpi"><i>预计到达</i><b>4 分 12 秒</b></span>`
@@ -233,9 +237,13 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
    任何“剩余秒数”不得直接写死文本，否则 10x 下会一跳好几秒；切倍速时锚点自愈不跳变。
 9. **关声音 = 立即静音**：清空语音队列 + `speechSynthesis.cancel()` + 令牌作废看门狗。
 10. **触控目标 ≥44px**，且每个可点元素都有 hover / active / focus-visible 三态。
-11. **列车几何只有一处真源**：车厢长度/间隙/半宽都在 `CFG`（`carLen` / `carGap` / `carHW`），
-    改尺寸必须同时满足 `cars*carLen+(cars-1)*carGap < stub`；车头/车尾的收头由
+11. **列车几何只有一处真源**：车厢长度/间隙/半宽都在 `CFG`（地铁）与 `CFG.tram`（有轨电车）里，
+    按线路 `kind` 选（`specOf()`）；改尺寸必须同时满足 `cars*carLen+(cars-1)*carGap < stub`；车头/车尾的收头由
     `noseProfile()` / `tailProfile()`（smoothstep 收窄，不许样条插值）表达，不许改成固定朝向的图标或图片。
+12. **线路分品类（地铁 / 有轨电车 / 市域铁路），显示与报站不得把电车叫成地铁**：线路数据带
+    `kind`（品类）、`short`（显示全名，如「有轨电车蓉2号线」）、`badge`（紧凑徽标，如「蓉2」）；
+    徽标一律走 `lineBadge()`（不要拿 `key` 硬拼）、品类名/报站走 `lineVoiceTag()`；
+    地图上的换乘小牌对电车写「有轨电车」（地铁仍只写线号）。
 
 ## 9. Accessibility Constraints & Accepted Debt
 
