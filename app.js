@@ -36,6 +36,12 @@
     carHW: 3.0,            // 车厢半宽（总宽 6.0 < 轨道带 10.5，列车画在色带里、两侧露线路色）
     /* 有轨电车（蓉2号线，阿尔斯通 Citadis 302 低地板 5 车编组、车长约 32.6 m）：
        比地铁**短得多、单节也短**，一眼能看出不是地铁；车厢总长 46.6 单位（地铁 113.1） */
+    /* 重绘节流参数（PERFORMANCE.md P0-3）：按缩放档定列车重绘频率；暂停/后台不重绘。
+       注意只节流 renderTrains()（重头）：视口变换走 SVG transform，拖图/缩放不必重画列车，
+       所以节流不影响“拖图跟手”；屏幕空间的贴片/气泡仍逐帧定位（它们要跟着拖动走）。 */
+    lodK: 0.6,             // 小于这个缩放（全网档）→ 列车重绘降到 lodHz
+    lodHz: 15,
+    midHz: 30,
     tram: { cars: 5, carLen: 8.6, carGap: 0.9, carHW: 2.6 },
     tramPlatHalf: 15,      // 电车站台比地铁站台小一圈（图元上也要能区分）
     tramPlatHW: 6.0,
@@ -948,6 +954,17 @@
     return function () { return 1; };
   }
 
+  /* 列车重绘间隔（秒）：降到返回 Infinity 就是不重绘。暂停/切后台为 Infinity；
+     拖动/缩放/切车等需要立即生效的地方调 invalidateTrains()。 */
+  var trainsDirty = true;
+  function invalidateTrains() { trainsDirty = true; }
+  function trainsInterval() {
+    if (ui.paused || document.hidden === true) return Infinity;
+    if (view.k < CFG.lodK) return 1 / CFG.lodHz;
+    if (view.k < 2) return 1 / CFG.midHz;
+    return 1 / 60;
+  }
+
   /* 逐列车绘制（贴在各自线路上） */
   function renderTrains() {
     var total = CFG.cars;
@@ -1467,6 +1484,7 @@
   /* 切换交路（不重置列车位置：旧位置仍在新交路上就保位置，否则退到分叉站） */
   function switchService(key, quiet) {
     if (!ROUTES[key] || key === state.routeKey) { syncRouteSelect(); return false; }
+    invalidateTrains();              // 交路变了：下一帧必定重画整车队
     var r = ROUTES[key];
     var i = r.ids.indexOf(state.curId);
     var moved = false;
@@ -1743,6 +1761,7 @@
   }
 
   function setTarget(id) {
+    invalidateTrains();              // 目标变了：下一站圈/气泡要立即跟上
     if (!id) { state.target = null; state.eta = null; state.etaStops = 0; refreshPopup(); return; }
     var st = M.byId[id];
     if (!st) return;
@@ -1994,6 +2013,7 @@
       zoomAt(stage.w / 2, stage.h / 2, k / view.k);
       followStep(0, true);          // 立即对中到列车，避免开启动画期间看不到车
     }
+    invalidateTrains();
   }
 
   function followStep(dt, snap) {
@@ -3274,18 +3294,19 @@
           }
         });
       }
-      /* 自检模式把重绘限到 ~10fps（仿真仍逐帧推进），无头跑得快很多；
-         普通模式下每帧都重绘，动画不受影响。 */
+      /* 自检模式仍固定 ~10fps（原口径）；普通模式按缩放档节流（P0-3）。 */
       renderAcc += dtRaw;
-      if (!SELFTEST_MODE || renderAcc >= 0.1) {
+      var rIv = SELFTEST_MODE ? 0.1 : trainsInterval();
+      if (rIv !== Infinity && (renderAcc >= rIv || trainsDirty)) {
         renderAcc = 0;
+        trainsDirty = false;
         renderTrains();
+      }
       updateNextMarks(dtRaw);
       updateTrainPills();
       positionBubbles();        updateNextMarks(dtRaw);
         updateTrainPills();
         positionBubbles();
-      }
       followStep(dtRaw);
       hudAcc += dtRaw;
       if (hudAcc > 0.12) {
@@ -3346,6 +3367,7 @@
     if (typeof sheet !== 'undefined' && !sheet.dragging && !panel.dragging) applySnap(sheet.snap);
     if (typeof applyPanel === 'function' && !panel.dragging) applyPanel();
     if (typeof updateReelFades === 'function') updateReelFades();
+    invalidateTrains();               // 视口变了：补一帧
   }
   /* 调试参数（仅影响本地演示/自动化截图，不影响正常使用） */
   function debugParams() {
@@ -3403,6 +3425,7 @@
       ui.paused = !ui.paused;
       setLabel(this, ui.paused ? '继续' : '暂停');
       setIcon(this, ui.paused ? 'ic-play' : 'ic-pause');
+      invalidateTrains();            // 恢复时补一帧（暂停期间不重绘）
       updateHud();
     });
     $('btnReset').addEventListener('click', function () {
