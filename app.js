@@ -971,6 +971,9 @@
     trains.forEach(function (tr, ti) {
       var grp = trainGroups[ti];
       if (!grp) return;
+      /* 被图例筛掉的线路：整列既不算几何也不写 DOM（显示/隐藏由 CSS 的 .line-off 负责）。
+         图例变化时 applyLineFilter() 会 invalidateTrains()，重新打开会补一帧。 */
+      if (!lineVisible(ROUTES[tr.routeKey].lineKey)) return;
       var route = ROUTES[tr.routeKey];
       var spec = specOf(tr), CL = spec.carLen, CG = spec.carGap, HW = spec.carHW;
       total = spec.cars;
@@ -1301,6 +1304,7 @@
     return !!ui.showLines[key];
   }
   function applyLineFilter() {
+    invalidateTrains();               // 筛选变了：被重新打开的线路要立刻补画（被筛掉的下一帧就不再算）
     Object.keys(lineElems).forEach(function (k) {
       var on = lineVisible(k);
       lineElems[k].forEach(function (el) { el.classList.toggle('line-off', !on); });
