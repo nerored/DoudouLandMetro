@@ -1001,6 +1001,30 @@
     return 1 / 60;
   }
 
+  /* 亚帧插值（P0-1 的配套，2026-09-14 修回归）：
+     几何按需重画（阈值 eps），但位置必须每帧跟上——否则低缩放下“每 0.7~1.4s 才动一下”，
+     用户看到的就是“列车基本没动”（实测 k=7 只有 0.8 次重画/秒、单步跳 12px）。
+     做法：重画时记下头部世界坐标 tr._base 并把组 transform 清零；其余帧只写一个 translate，
+     代价 = 每列车 1 次 pointAt + 1 个属性（量级 10²/帧，远低于原来的 10³~10⁴）。 */
+  function interpolateTrains() {
+    for (var ti = 0; ti < trains.length; ti++) {
+      var tr = trains[ti], rec = trainGroups[ti];
+      if (!rec || !rec.g || !tr._base) continue;
+      if (!lineVisible(ROUTES[tr.routeKey].lineKey)) continue;
+      var grp = rec.g;
+      var route = ROUTES[tr.routeKey];
+      var p = pointAt(route, kmToMap(route, tr.posKm));
+      var dx = p.x - tr._base.x, dy = p.y - tr._base.y;
+      if (dx * dx + dy * dy < 1e-8) {
+        if (tr._tset) { grp.removeAttribute('transform'); tr._tset = 0; }
+        continue;
+      }
+      /* 注意：插值 delta 量级是 0.001~0.1 单位，不能用 f1()（只留 1 位小数 → 四舍五入成 0，等于没插值） */
+      grp.setAttribute('transform', 'translate(' + (Math.round(dx * 1000) / 1000) + ',' + (Math.round(dy * 1000) / 1000) + ')');
+      tr._tset = 1;
+    }
+  }
+
   /* 逐列车绘制（贴在各自线路上） */
   function renderTrains() {
     var total = CFG.cars;
@@ -1027,6 +1051,10 @@
       var CL = spec.carLen, CG = spec.carGap, HW = spec.carHW;
       total = spec.cars;
       var sHead = kmToMap(route, tr.posKm);
+      /* 重画时记录头部世界坐标，并把亚帧插值的 transform 清零（新几何本身就是当前位置） */
+      var hpBase = pointAt(route, sHead);
+      tr._base = { x: hpBase.x, y: hpBase.y };
+      if (tr._tset) { grp.g.removeAttribute('transform'); tr._tset = 0; }
       var dir = tr.dir;
       /* 视口裁剪：不在可视区域内的列车不重绘也不显示（线路多/列车多时很重要） */
       var hp0 = pointAt(route, sHead);
@@ -3361,6 +3389,7 @@
         trainsDirty = false;
         renderTrains();
       }
+      interpolateTrains();          // 位置每帧跟（几何仍按需重画）
       updateNextMarks(dtRaw);
       updateTrainPills();
       positionBubbles();
@@ -3697,8 +3726,7 @@
     })();
     chk('车体轮廓与线路中心线距离 = 半宽（<0.25）', maxErr < 0.25, f2(maxErr));
 
-    chk('小缩放整数化：偏差 ≤ 理论最大 √0.5≈0.71 单位，且 d 字符串更短（P0-2）', (function () {
-      var route = ROUTES['1main'], s = route.mapAt[10];
+    chk('小缩放整数化：偏差 ≤ 理论最大 √0.5≈0.71 单位，且 d 字符串更短（P0-2）', (function () {      var route = ROUTES['1main'], s = route.mapAt[10];
       var savedPrec = geoPrec;
       geoPrec = 0.1; var hi = bandPath(route, s, s - CFG.carLen, 0, CFG.carHW, 14, function () { return 1; });
       geoPrec = 1;   var lo = bandPath(route, s, s - CFG.carLen, 0, CFG.carHW, 14, function () { return 1; });
@@ -3713,6 +3741,26 @@
       chk.__prec = '最大偏差 ' + f2(maxd) + ' 单位（理论上限 0.71）；d 长度 ' + hi.length + ' → ' + lo.length;
       return maxd <= 0.71 + 1e-9 && lo.length < hi.length;
     })(), chk.__prec);
+
+    /* 动画流畅度回归防护（2026-09-14 踩过）：几何按需重画时，位置必须每帧靠 transform 插值跟上，
+       否则低缩放下“每 0.7~1.4s 才动一下”，用户看到的就是“列车基本没动”。 */
+    chk('列车动画：几何按需重画时位置仍每帧插值跟上（不冻结）', (function () {
+      invalidateTrains(); renderTrains();
+      var ti = -1;
+      for (var i = 0; i < trains.length; i++) { if (trains[i]._base) { ti = i; break; } }
+      if (ti < 0) { chk.__anim2 = '无可测列车（全在视野外）'; return false; }
+      var tr = trains[ti], route = ROUTES[tr.routeKey];
+      var km0 = tr.posKm, base = { x: tr._base.x, y: tr._base.y };
+      tr.posKm = km0 + 0.5;                       // 一个小于低缩放 eps 的位移
+      interpolateTrains();
+      var t = trainGroups[ti].g.getAttribute('transform') || '';
+      var m = /translate\(([-\d.]+),([-\d.]+)\)/.exec(t);
+      var p = pointAt(route, kmToMap(route, tr.posKm));
+      var eff = m ? Math.hypot(base.x + (+m[1]) - p.x, base.y + (+m[2]) - p.y) * view.k : -1;
+      tr.posKm = km0; invalidateTrains(); renderTrains();    // 还原
+      chk.__anim2 = '插值后偏差 ' + f2(eff) + ' px（transform=' + (t || '空') + '）';
+      return !!m && eff >= 0 && eff < 0.35;
+    })(), chk.__anim2);
 
     /* 全程运行（1 号线主线）：逐站停靠、不超速、终点折返 */
     var sim = cloneState();
@@ -5013,6 +5061,19 @@
     chime: chime, speak: speak, nextStopAfter: nextStopAfter, showAnnounce: showAnnounce,
     reservedBoxes: reservedBoxes, updateTtsHint: updateTtsHint, unlockAudio: unlockAudio,
     applyLineFilter: applyLineFilter, buildLegend: buildLegend, lineElems: lineElems, lineVisible: lineVisible,
-    trainIndexForLine: trainIndexForLine, updateStationList: updateStationList, scrollListToActive: scrollListToActive
+    trainIndexForLine: trainIndexForLine, updateStationList: updateStationList, scrollListToActive: scrollListToActive,
+    /* 诊断钩（动画流畅度回归时用，见 PERFORMANCE.md 5.4.9）：看“画在哪里 / 插值跟了多少 / 阈值多少” */
+    trainDrawState: function () {
+      return {
+        k: view.k, interval: trainsInterval(), epoch: drawEpoch,
+        trains: trains.map(function (tr) {
+          var ld = tr._ld, rt = ROUTES[tr.routeKey];
+          var hp = pointAt(rt, kmToMap(rt, tr.posKm));
+          return { km: +tr.posKm.toFixed(4), routeKey: tr.routeKey, px: +hp.x.toFixed(3), py: +hp.y.toFixed(3),
+            base: tr._base ? [+tr._base.x.toFixed(3), +tr._base.y.toFixed(3)] : null,
+            tset: tr._tset || 0, eps: ld ? ld.eps : null, ldkm: ld ? +ld.km.toFixed(4) : null, drawn: ld ? 1 : 0 };
+        })
+      };
+    },
   };
 })();
