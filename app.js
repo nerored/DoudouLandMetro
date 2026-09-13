@@ -27,9 +27,13 @@
     readyT: 0.6,           // 关门后确认 s（合计停站 10.0s）
     reverseT: 12,          // 终点站折返 s
     cars: 8,
-    carLen: 9,             // 车厢长度（地图单位，示意夸张）
-    carGap: 1.2,           // 车厢间隙
-    carHW: 5.0,            // 车厢半宽
+    /* 车厢几何（2026-09-13 重做车头/车尾时定）：1 单位 = 20 m，真车 20 m x 3 m 的比例画不出来
+       （轨道带就 10.5 单位宽，车会细成一根丝），所以取示意比例 长:宽 ≈ 2.2:1——
+       比原来的 9 x 10（近乎正方）明显修长，又留得住窗带/车门/空调的细节。
+       硬约束：cars*carLen + (cars-1)*carGap 必须 < stub（端点折返要放得下整列车，自检有断言）。 */
+    carLen: 13,            // 车厢长度（地图单位，示意夸张；8 节共 113.1 < stub 120）
+    carGap: 1.3,           // 车厢间隙
+    carHW: 3.0,            // 车厢半宽（总宽 6.0 < 轨道带 10.5，列车画在色带里、两侧露线路色）
     platHalf: 20,          // 站台长度的一半（地图单位）
     platHW: 8.5,           // 站台半宽
     stub: 120,             // 端点站外的折返线长度（地图单位，要能容下整列车）
@@ -868,15 +872,19 @@
       var els = [];
       for (var i = 0; i < CFG.cars; i++) {
         var car = svg('g', null, cars);
-        var bodyCls = 'car-body' + (i === 0 ? ' head' : '');
+        var last = i === CFG.cars - 1;
+        var bodyCls = 'car-body' + (i === 0 ? ' head' : (last ? ' tail' : ''));
         els.push({
           halo: svg('path', null, halo),
           shadow: svg('path', null, shadow),
           body: svg('path', { class: bodyCls }, car),
           nose: i === 0 ? svg('path', { class: 'car-nose' }, car) : null,
+          tail: last && i > 0 ? svg('path', { class: 'car-tail' }, car) : null,
           stripe: svg('path', { class: 'car-stripe' }, car),
+          roof: svg('path', { class: 'car-roof' }, car),
           win: svg('path', { class: 'car-win' }, car),
           door: svg('path', { class: 'car-door-leaf' }, car),
+          lamp: (i === 0 || last) ? svg('path', { class: 'car-lamp' + (last ? ' rear' : '') }, car) : null,
           gap: svg('path', { class: 'car-gap' }, car)
         });
       }
@@ -885,12 +893,22 @@
     });
   }
 
+  /* 车头：前 22% 用 smoothstep 收成流线鼻锥（半宽 0.42 → 1），折角圆润、一眼是车头 */
   function noseProfile(i) {
-    if (i === 0) return function (u) { return u < 0.16 ? 0.5 + 0.5 * (u / 0.16) : 1; };
+    if (i === 0) return function (u) {
+      if (u >= 0.22) return 1;
+      var t = u / 0.22;
+      return 0.42 + 0.58 * (t * t * (3 - 2 * t));
+    };
     return function () { return 1; };
   }
+  /* 车尾：末 14% 圆角收尾（1 → 0.70），比车头的长鼻锥钝、再配红色尾灯，和车头区分开 */
   function tailProfile(i, total) {
-    if (i === total - 1) return function (u) { return u > 0.9 ? 1 - 0.2 * ((u - 0.9) / 0.1) : 1; };
+    if (i === total - 1) return function (u) {
+      if (u <= 0.86) return 1;
+      var t = (u - 0.86) / 0.14;
+      return 1 - 0.30 * (t * t * (3 - 2 * t));
+    };
     return function () { return 1; };
   }
 
@@ -911,40 +929,74 @@
       if (!vis) return;
       grp.g.classList.toggle('active', ti === activeIdx);
       for (var i = 0; i < total; i++) {
+        var isHead = i === 0, isTail = i === total - 1;
         var fS = sHead - dir * i * (CFG.carLen + CFG.carGap);
         var rS = fS - dir * CFG.carLen;
-        var prof = function (u) { return noseProfile(i)(u) * tailProfile(i, total)(u); };
+        /* 车厢参数 u：0 = 本节车的车头端，1 = 车尾端（bandPath 从 u=0 开始扫到 u=1） */
+        var uAt = function (u) { return fS + (rS - fS) * u; };
+        var nProf = noseProfile(i), tProf = tailProfile(i, total);
+        var prof = function (u) { return nProf(u) * tProf(u); };
         var el = grp.els[i];
-        el.body.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW, 14, prof));
-        el.halo.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.55, 10, prof));
-        el.shadow.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.12, 12, prof));
-        el.stripe.setAttribute('d', bandPath(route, fS + dir * -CFG.carLen * 0.1, rS + dir * CFG.carLen * 0.1, 0, CFG.carHW * 0.17, 8));
-        var winHalf = CFG.carLen * 0.115;
-        var wins = '';
-        [0.30, 0.45, 0.60, 0.74].forEach(function (u) {
-          var c = fS + (rS - fS) * u;
-          wins += bandPath(route, c + winHalf, c - winHalf, CFG.carHW * 0.62, CFG.carHW * 0.17, 3) + ' ';
-          wins += bandPath(route, c + winHalf, c - winHalf, -CFG.carHW * 0.62, CFG.carHW * 0.17, 3) + ' ';
-        });
+        el.body.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW, 16, prof));
+        /* 光晕/阴影比车身宽，别盖住车身细节：光晕宽度≈轨道带宽（10.2 vs 10.5），
+           这样在全网缩放下列车仍是一段看得见的白色，在大缩放下就是车身周围的一圈白边 */
+        el.halo.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.70, 12, prof));
+        el.shadow.setAttribute('d', bandPath(route, fS, rS, 0, CFG.carHW * 1.62, 12, prof));
+        /* 涂装：沿车顶中心线的线路色带（两端各让 10% 给车头/车尾端面） */
+        el.stripe.setAttribute('d', bandPath(route, uAt(0.10), uAt(0.90), 0, CFG.carHW * 0.15, 8));
+        /* 车顶设备：两台空调机组（就画在中心线上，幅度小） */
+        el.roof.setAttribute('d',
+          bandPath(route, uAt(0.30), uAt(0.415), 0, CFG.carHW * 0.32, 3) +
+          bandPath(route, uAt(0.585), uAt(0.70), 0, CFG.carHW * 0.32, 3));
+        /* 侧窗：一条连续窗带（车头让出驾驶室、车尾让出尾端驾驶室），不再是 4 个小方窗 */
+        var wFrom = isHead ? 0.30 : 0.10;
+        var wTo = isTail ? 0.78 : 0.90;
+        var wOff = CFG.carHW * 0.72, wHalf = CFG.carHW * 0.10;
+        var wins = bandPath(route, uAt(wFrom), uAt(wTo), wOff, wHalf, 6) + ' ' +
+          bandPath(route, uAt(wFrom), uAt(wTo), -wOff, wHalf, 6) + ' ';
+        if (isHead) {
+          /* 驾驶室挡风玻璃：横跨车头的浅色带，跟着鼻锥一起收窄 */
+          wins += bandPath(route, uAt(0.135), uAt(0.205), 0, CFG.carHW, 3,
+            function (u) { return 0.70 * nProf(u); }) + ' ';
+        }
         el.win.setAttribute('d', wins);
-        var doorHalf = CFG.carLen * 0.093;
-        var dOpen = tr.door * CFG.carLen * 0.083;
+        /* 车门：每节车两对双开门，门叶叠在窗带上把它打断（真车就是这样）；
+           开门动画仍是 door/doorPhase 那套，这里只是把位移换成新车长的比例 */
+        var doorHalf = CFG.carLen * 0.075;
+        var dOpen = tr.door * CFG.carLen * 0.075;
+        var doorUs = isHead ? [0.42, 0.76] : [0.26, 0.72];
         var doors = '', gaps = '';
-        [0.17, 0.83].forEach(function (u) {
-          var c = fS + (rS - fS) * u;
-          var l1 = c - doorHalf - dOpen, l2 = c - dOpen;
-          var r1 = c + dOpen, r2 = c + doorHalf + dOpen;
-          [[l1, l2], [r1, r2]].forEach(function (seg) {
-            doors += bandPath(route, seg[0], seg[1], CFG.carHW * 0.90, CFG.carHW * 0.24, 3) + ' ';
-            doors += bandPath(route, seg[0], seg[1], -CFG.carHW * 0.90, CFG.carHW * 0.24, 3) + ' ';
+        doorUs.forEach(function (u) {
+          var c = uAt(u);
+          [[c - doorHalf - dOpen, c - dOpen], [c + dOpen, c + doorHalf + dOpen]].forEach(function (seg) {
+            doors += bandPath(route, seg[0], seg[1], wOff, wHalf, 3) + ' ';
+            doors += bandPath(route, seg[0], seg[1], -wOff, wHalf, 3) + ' ';
           });
-          if (dOpen > 0.05) gaps += bandPath(route, c + dOpen * 0.92, c - dOpen * 0.92, 0, CFG.carHW * 1.05, 3) + ' ';
+          if (dOpen > 0.05) gaps += bandPath(route, c + dOpen * 0.92, c - dOpen * 0.92, 0, CFG.carHW * 1.02, 3) + ' ';
         });
         el.door.setAttribute('d', doors);
+        /* 车厢之间的风挡/车钩缝：每节车尾留一条深色缝（末节车除外，那里是尾端） */
+        if (!isTail) gaps += bandPath(route, uAt(0.955), uAt(1), 0, CFG.carHW * 0.98, 2) + ' ';
         el.gap.setAttribute('d', gaps);
+        /* 车头：深色驾驶室端面（跟着鼻锥收窄）+ 两颗前照灯；
+           车尾：同样的深色端面 + 红色尾灯，两端一眼能分开 */
         if (el.nose) {
-          var nc = fS + (rS - fS) * 0.055;
-          el.nose.setAttribute('d', bandPath(route, fS + (rS - fS) * 0.02, nc, 0, CFG.carHW * 0.78, 4));
+          el.nose.setAttribute('d', bandPath(route, uAt(0.01), uAt(0.13), 0, CFG.carHW, 6,
+            function (u) { return 0.86 * nProf(u); }));
+          el.lamp.setAttribute('d',
+            bandPath(route, uAt(0.045), uAt(0.085), CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+              function (u) { return 0.80 * nProf(u); }) + ' ' +
+            bandPath(route, uAt(0.045), uAt(0.085), -CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+              function (u) { return 0.80 * nProf(u); }) + ' ');
+        }
+        if (el.tail) {
+          el.tail.setAttribute('d', bandPath(route, uAt(0.87), uAt(0.99), 0, CFG.carHW, 6,
+            function (u) { return 0.86 * tProf(u); }));
+          el.lamp.setAttribute('d',
+            bandPath(route, uAt(0.905), uAt(0.945), CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+              function (u) { return 0.86 * tProf(u); }) + ' ' +
+            bandPath(route, uAt(0.905), uAt(0.945), -CFG.carHW * 0.26, CFG.carHW * 0.12, 2,
+              function (u) { return 0.86 * tProf(u); }) + ' ');
         }
       }
       /* 当前控制列车的选中指示（车头位置的小圆环） */

@@ -857,24 +857,27 @@ body {
 #world .train-halo path {
   fill: rgba(255, 255, 255, .92);
   stroke: var(--line);
-  stroke-width: 1.6;
+  stroke-width: 0.8;
   stroke-opacity: .55;
   animation: trainpulse 2.2s ease-in-out infinite;
 }
-#world .train.active .train-halo path { stroke-opacity: .95; stroke-width: 2.4; }
+#world .train.active .train-halo path { stroke-opacity: .95; stroke-width: 1.1; }
 @keyframes trainpulse { 0%, 100% { fill-opacity: .78; } 50% { fill-opacity: 1; } }
-#world .car-body { fill: #f7fafd; stroke: #3f5567; stroke-width: 1.4; }
-#world .train.active .car-body { stroke: #16283a; stroke-width: 2.3; }
+/* 描边一律按「车厢尺寸的比例」给：车身只有 6 单位宽，用 1.4 单位描边在大缩放下会把车涂成一块深色 */
+#world .car-body { fill: #f7fafd; stroke: #3f5567; stroke-width: 0.6; }
+#world .train.active .car-body { stroke: #16283a; stroke-width: 0.9; }
 #world .train:not(.active) .car-body { opacity: .93; }
 #world .train-sel { fill: none; stroke-width: 2; stroke-dasharray: 4 3.5; opacity: .85; }
-#world .car-body.head { stroke: #24455f; stroke-width: 1.6; }
+#world .car-body.head, #world .car-body.tail { stroke: #24455f; stroke-width: 0.8; }
 #world .car-stripe { fill: var(--line); opacity: .9; }
-#world .car-win { fill: #bcd9ee; stroke: #6f8ea6; stroke-width: .7; }
-#world .car-door-leaf { fill: #9fb4c6; stroke: #6f8ea6; stroke-width: .6; }
+#world .car-roof { fill: #a8b6c4; }
+#world .car-win { fill: #bcd9ee; stroke: #6f8ea6; stroke-width: .3; }
+#world .car-door-leaf { fill: #9fb4c6; stroke: #6f8ea6; stroke-width: .3; }
 #world .car-gap { fill: #2c3e4d; }
 #world .car-coupler { stroke: #46596a; stroke-width: 1.6; }
-#world .car-nose { fill: #22303d; }
+#world .car-nose, #world .car-tail { fill: #22303d; }
 #world .car-lamp { fill: #fff6cf; }
+#world .car-lamp.rear { fill: #e2554c; }
 
 #world .next-halo { fill: none; stroke-width: 6; opacity: .18; }
 #world .next-ring { fill: none; stroke-width: 2.6; stroke-dasharray: 5 4; animation: nrpulse 1.6s ease-in-out infinite; }
