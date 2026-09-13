@@ -11,6 +11,7 @@
 <link rel="apple-touch-icon" sizes="180x180" href="./icon-180.png">
 <link rel="apple-touch-icon" sizes="152x152" href="./icon-180.png">
 <link rel="apple-touch-icon" sizes="167x167" href="./icon-180.png">
+<link rel="stylesheet" href="./style.css?v=2026-09-13.2311">
 <link rel="icon" type="image/png" sizes="32x32" href="./icon-32.png">
 <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
 <link rel="manifest" href="./manifest.json">
@@ -18,7 +19,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="stylesheet" href="./style.css">
+<!-- 样式只在上面那一处引用（带 ?v=，由发版脚本同步）；这里不再放第二份，否则会重复下载一次 -->
 </head>
 <body>
 <!-- 图标全部是内联 SVG（无图标字体/无 CDN）：stroke 1.75，currentColor，18px -->
@@ -308,31 +309,18 @@
 </div>
 
 <script>
-/* 资源按版本号加载：先取 version.json（no-store）拿到版本，再把 data.js / app.js 以 ?v=<版本> 注入。
-   这样每次发版后资源 URL 会变，浏览器的 HTTP 缓存（GitHub Pages 的 max-age=600）拦不住，
-   “⟳ 刷新”才能真正拿到新代码。取不到版本（file:// 等）时就直接按原路径加载，功能不受影响。 */
-(function () {
-  function load(v) {
-    var q = v ? '?v=' + encodeURIComponent(v) : '';
-    /* 静态 link 先渲染、不闪；这里再按版本号加载一份（同源、后加载生效），确保样式也不会被缓存拖住 */
-    var l = document.createElement('link');
-    l.rel = 'stylesheet';
-    l.href = './style.css' + q;
-    document.head.appendChild(l);
-    ['data.js', 'app.js'].forEach(function (f) {
-      var s = document.createElement('script');
-      s.async = false;               // 保持先后顺序：先 data.js 再 app.js
-      s.src = './' + f + q;
-      document.body.appendChild(s);
-    });
-  }
-  try {
-    fetch('version.json?_v=' + Date.now(), { cache: 'no-store' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { load(j && j.version ? j.version : ''); })
-      .catch(function () { load(''); });
-  } catch (e) { load(''); }
-})();
+/* 版本戳与资源引用（P1-2 首屏优化，2026-09-13）：
+   以前是 “先 fetch version.json（no-store，串行一个 RTT）→ 再用 ?v= 注入 style.css/data.js/app.js”，
+   大资源要等小请求回来才能开始下，而 JS 注入的资源 preload 扫描器也发现不了，
+   并且会多取一份 style.css（静态 link 一个 URL + 注入的 ?v= 另一个 URL）。
+   现在把这四个引用写成**静态 HTML + 写死的 ?v=**：能被抓取器提前发现、没有串行 RTT、style.css 只取一次。
+   防缓存击穿的保证：① 下面这些 ?v= 由 tools/bump-version.sh 随 version.json 一起换（不同 URL = 不同缓存键）；
+   ② 「⟳ 刷新」会先拉一次 version.json 比对，再带着 _v=<时间戳> 整页重拉（HTML 也换 URL）。
+   版本号与 commit 由发版脚本写入，不要手改。 */
+window.__BUILD_VERSION = '2026-09-13.2311';
+window.__BUILD_COMMIT = '8987fa8';
 </script>
+<script src="./data.js?v=2026-09-13.2311"></script>
+<script src="./app.js?v=2026-09-13.2311"></script>
 </body>
 </html>

@@ -2803,7 +2803,13 @@
     if (row) row.addEventListener('click', onTap);        // 图例里的版本行也可点
     var hard = $('btnHardRefresh');
     if (hard) hard.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); hardReload(); });
-    fetchVersion(false, true);      // 首次拉取：决定“加载时的版本”
+    /* “加载时的版本”不再单独拉一次 version.json（P1-2）：index.html 里由 bump-version.sh 写死
+       window.__BUILD_VERSION/__BUILD_COMMIT，这里直接用；拿不到（file:// 直开旧副本等）才回退去拉一次。 */
+    if (window.__BUILD_VERSION) {
+      renderVersion({ version: window.__BUILD_VERSION, commit: window.__BUILD_COMMIT || '' });
+    } else {
+      fetchVersion(false, true);
+    }
   }
 
   /* ==================================================== 面板：列车选择 */
@@ -3902,12 +3908,23 @@
         t.textContent.trim().length > 0 && /\d{4}-\d{2}-\d{2}|读取|未知/.test(t.textContent);
     })(), chk.__ver2);
 
-    chk('版本戳已从 version.json 读取（http 环境）', (function () {
+    chk('版本戳来自 index.html 内联常量（P1-2：不再启动时拉 version.json），且与静态资源 ?v= 一致', (function () {
       var http = location.protocol === 'http:' || location.protocol === 'https:';
-      if (!http) return true;                        // file:// 下 fetch 不可用，跳过
-      return !!(BUILD_VERSION && BUILD_VERSION.version) && /^\d{4}-\d{2}-\d{2}/.test(BUILD_VERSION.version) &&
-        /v\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}/.test($('verText').textContent);
-    })(), BUILD_VERSION ? (BUILD_VERSION.version + ' · ' + BUILD_VERSION.commit) : '未读取');
+      if (!http) return true;                        // file:// 下没有内联常量，回退拉 version.json
+      var inline = window.__BUILD_VERSION;
+      var okInline = !!inline && /^\d{4}-\d{2}-\d{2}/.test(inline) && !!window.__BUILD_COMMIT;
+      var srcs = [].slice.call(document.querySelectorAll('script[src],link[rel=stylesheet]'))
+        .map(function (e) { return e.getAttribute('src') || e.getAttribute('href'); })
+        .filter(function (u) { return /\/(data\.js|app\.js|style\.css)\?v=/.test(u); });
+      var vers = {};
+      srcs.forEach(function (u) { vers[/\?v=([^&]*)/.exec(u)[1]] = 1; });
+      var keys = Object.keys(vers);
+      chk.__ver3 = '内联=' + inline + '/' + window.__BUILD_COMMIT + ' 静态引用 ' + srcs.length + ' 个 · ?v= ' + keys.join(',');
+      /* 硬约束：三个静态引用都得带 ?v=，且都与内联常量一致（不一致 = 发版漏同步，缓存会击穿） */
+      return okInline && srcs.length === 3 && keys.length === 1 && keys[0] === inline &&
+        (BUILD_VERSION && BUILD_VERSION.version === inline) &&
+        /\d{4}-\d{2}-\d{2}/.test($('verText').textContent);
+    })(), chk.__ver3);
 
     chk('点击「检查更新」不会把页面弄坏（已是最新时不重载）', (function () {
       var before = location.href;

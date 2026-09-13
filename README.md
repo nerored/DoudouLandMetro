@@ -18,21 +18,22 @@
 
 | 文件 | 行数 | 作用 |
 |---|---|---|
-| `index.html` | 212 | 页面骨架：SVG 画布、状态 HUD、站点悬浮窗、图例、控制面板（列车/控制/导航/列表）、主屏图标与 manifest 声明；底部 bootstrap 按 `version.json` 的版本号注入 CSS/JS |
+| `index.html` | 260 | 页面骨架：SVG 画布、状态 HUD、站点悬浮窗、图例、控制面板；**静态引用带版本号的 CSS/JS**（`?v=` 由发版脚本同步，见第 7 节） |
 | `style.css` | 797 | 全部样式；横竖屏布局、安全区、面板折叠、站点悬浮窗、列车标签、到站气泡、触摸约束 |
 | `data.js` | 6（673 KB） | 由脚本生成的数据：**18 线路 / 20 交路 / 398 站 / 20 段轨道折线** + 底图（94 条河流、85 个湖泊、6018 段道路，均为地图坐标） |
 | `app.js` | 4907 | 弧长参数化、多线路/多交路、多列车（地铁/有轨电车两套几何）、底图、渲染、运行状态机、强调/气泡、声音与报站、手势、刷新与版本戳、自检 |
 | `icon-180.png` | – | **iPad/iOS 主屏图标**（180×180）；由 `tools/make-icons.py` 从成品圆角图处理成 **full-bleed**（四角不留白，iOS 自己再加圆角）；同时声明 152/167 |
 | `icon-512.png` / `icon-32.png` | – | 通用图标（manifest / 浏览器标签页），同一套 full-bleed 处理（512 为全彩 PNG，216 KB） |
 | `manifest.json` | 15 | Web App Manifest：名称「豆豆国的地铁」、`display: standalone`、图标、主题色 |
-| `version.json` | 6 | 版本戳（`version` / `commit` / `builtAt`）；页面用 `fetch(..., {cache:'no-store'})` 现取并显示 |
+| `version.json` | 6 | 版本戳（`version` / `commit` / `builtAt`）；**只在点「⟳ 刷新」时按需取一次**做比对（启动不再拉，见第 7 节） |
 | `tools/fetch-osm-lines.py` | 162 | 抓各线路的 OSM 线路关系（站点顺序 + 轨道几何）→ `/tmp/osm-lines/*.json` |
 | `tools/build-lines.py` | 431 | 拼轨道、投影、投影站点、推导换乘 + 嵌入底图 → `data.js`（`--write-shift` 输出底图所需平移量） |
 | `tools/fetch-basemap.py` | 236 | 分块抓全网水系 / 快速路（Overpass；全部端点不可用时用 OSM API `map` 调用兜底）→ `/tmp/basemap-raw/` |
 | `tools/build-basemap.py` | 293 | 底图合并 / 去重 / 分档抽稀 → `tools/basemap.json` |
 | `tools/build-data.py` | 589 | 单线路时代的旧生成器：现在只用来提供 1/2 号线人工核对的 `STATION_META` |
 | `tools/make-icons.py` | 86 | 把「圆角 + 四角白边」的成品图标处理成 full-bleed 方形 PNG（180/512/32，见第 4 节） |
-| `tools/bump-version.sh` | 32 | 生成 `version.json`（发版流程：提交代码 → 跑它 → 提交 version.json → push） |
+| `tools/bump-version.sh` | 46 | 生成 `version.json`，**并把 `index.html` 里的 `?v=` 与两行版本常量一起换掉**（找不到版本号会报错退出）；发版流程：提交代码 → 跑它 → 提交 version.json+index.html → push |
+| `tools/check-version-sync.sh` | 26 | 校验「静态引用 `?v=` == `version.json` 版本 == `__BUILD_VERSION`」，不成立就 FAIL（防缓存击穿的回归闸） |
 | `DESIGN.md` | – | **UI 契约**：色板/字号/间距/组件/动效/响应式/无障碍 + 运行时不变量的唯一出处，改 UI 前先改它 |
 | `tools/headless-selftest.sh` | 64 | 无头自检 / 截图（Windows Edge `--headless=new`；`ALL=1` 打印全部断言，退出时清理自己启动的 Edge） |
 | `tools/lsp-probe-py.js` | 75 | 对 `tools/*.py` 发一次真实 LSP 会话，验证 basedpyright 可用（开发期工具，见第 9 节） |
@@ -282,15 +283,14 @@
 iPad 把它「添加到主屏」后是 standalone 窗口：**没有地址栏、没有刷新按钮**；而 GitHub Pages 给 HTML/JS 配了
 `cache-control: max-age=600`，所以关掉重开也可能还是旧版。为此提供两样东西：
 
-1. **可见版本戳**：页面加载时用 `fetch('version.json', { cache: 'no-store' })` 现取版本，
-   显示在**左下角图例的最后一行**（如 `v2026-09-13.0136 · a060776`，点一下=检查更新）。旧版页面看这一行就能一眼分辨。
-2. **「⟳ 刷新」按钮（舞台左上角、HUD 左边、始终可见）**：不看版本、直接**强制整页重拉** ——
-   带 `_v=<时间戳>` 的地址 + `location.replace()`，同时因为资源是**按版本号加载**的
-   （`index.html` 里的内联 bootstrap 先 `fetch('version.json?_v=…', {cache:'no-store'})` 拿版本，
-   再注入 `./style.css?v=<版本>`、`./data.js?v=<版本>`、`./app.js?v=<版本>`）——
+1. **可见版本戳**：页面启动时直接用 `index.html` 里写死的 `window.__BUILD_VERSION` / `__BUILD_COMMIT`
+   （**不再启动时拉 `version.json`**），显示在**右侧面板「控制」卡片的版本行**（如 `v2026-09-13.2311 · 8987fa8`，点一下=检查更新）。
+2. **「⟳ 刷新」按钮（舞台左上角、HUD 里）**：不看版本、直接**强制整页重拉** ——
+   带 `_v=<时间戳>` 的地址 + `location.replace()`；同时因为资源引用是**静态 + 写死版本号**的
+   （`./style.css?v=<版本>`、`./data.js?v=<版本>`、`./app.js?v=<版本>`）——
    所以 GitHub Pages 的 `max-age=600` 缓存拦不住，点一下一定能拿到新代码。
-   （静态的 `<link rel=stylesheet>` 保留着，先渲染不闪；版本号加载的那份后到生效。）
-3. **「检查更新」按钮**（右侧面板 列车 tab 的「控制」卡片里 + 左下角图例的版本行）；
+   **硬约束**：这三处 `?v=` 必须与 `version.json` 同步；发版后跑 `./tools/check-version-sync.sh <地址>` 验收（不一致就 FAIL）。
+3. **「检查更新」按钮**（右侧面板 列车 tab 的「控制」卡片里的版本行）；
    逻辑：拉一次 `version.json?_v=<时间戳>`（`cache:'no-store'`）与服务端版本比对——
    * 版本不同 → **带 `_v=` 的 cache-busting 地址 + `location.replace()` 强制重载**；
    * 版本相同 → 提示「已是最新（再点一下强制刷新）」，**4 秒内再点一次**则忽略比对、直接强制重载；
@@ -299,8 +299,9 @@ iPad 把它「添加到主屏」后是 standalone 窗口：**没有地址栏、�
 刷新 URL 由 `refreshUrlFor(href, stamp)` 构造：**保留原有查询参数（如 `?selftest=1`）与 hash，仅覆盖 `_v`**，
 并使用当前 `pathname`（在 Pages 子路径 `/DoudouLandMetro/` 下也正确）。
 
-**发版流程**（让版本戳与资源 URL 都更新）：改代码 → `git commit` → `./tools/bump-version.sh` →
-`git add version.json && git commit` → `git push`。改 `bump-version.sh` 里的 `commit` 取“生成时刻的 HEAD”，
+**发版流程**（让版本戳与资源 URL 都更新）：改代码 → `git commit` → `./tools/bump-version.sh`
+（它同时换 `version.json` 与 `index.html` 里的 `?v=`/两行常量）→ `git add version.json index.html && git commit` → `git push`
+→ `./tools/check-version-sync.sh <线上地址>` 验收。`bump-version.sh` 里的 `commit` 取“生成时刻的 HEAD”，
 也就是上一步的代码提交；**版本号变了，`?v=` 就会变，iPad 上点「⟳ 刷新」即必定拿到新代码**。
 
 ## 6. 底图与几何数据来源
