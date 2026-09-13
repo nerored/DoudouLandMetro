@@ -168,6 +168,19 @@
   }
   function f1(n) { return Math.round(n * 10) / 10; }
   function f2(n) { return Math.round(n * 100) / 100; }
+  /* 坐标格式化（P0-2）：小缩放用整数（字符串更短、也更快），放大用 0.1；
+     整数走查表，重复的坐标不再重复分配字符串 */
+  var geoPrec = 0.1;
+  var INT_STR = null;
+  function istring(v) {
+    var i = v + 8200;
+    if (i < 0 || i > 16400) return '' + v;
+    if (!INT_STR) INT_STR = new Array(16401);
+    var s = INT_STR[i];
+    if (s === undefined) { s = INT_STR[i] = '' + (i - 8200); }
+    return s;
+  }
+  function cf(v) { return geoPrec === 1 ? istring(Math.round(v)) : f1(v); }
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }  function fmtKm(km) { return km.toFixed(2) + ' km'; }
 
   /* ==================================================== 倒计时平滑
@@ -451,22 +464,44 @@
     return m[lo] + (km - a[lo]) / span * (m[hi] - m[lo]);
   }
   /* 沿路径生成“带状”轮廓（中心线两侧各 offset±halfW），用于车厢与站台 */
+  /* ------- 热点路径专用采样（P0-2）：把点与法向写进模块级标量，避免每点 new {x,y} ------- */
+  var _lo = 0, _hi = 0, _t = 0, _sx = 0, _sy = 0, _snx = 0, _sny = 0;
+  function segOf(route, s) {
+    var cum = route.cum;
+    s = clamp(s, 0, route.length);
+    var lo = 0, hi = cum.length - 1, mid;
+    while (lo < hi - 1) { mid = (lo + hi) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid; }
+    var span = cum[hi] - cum[lo] || 1;
+    _lo = lo; _hi = hi; _t = (s - cum[lo]) / span;
+  }
+  function lerpAt(route, s) {
+    segOf(route, s);
+    var a = route.samples[_lo], b = route.samples[_hi];
+    return [a.x + (b.x - a.x) * _t, a.y + (b.y - a.y) * _t];
+  }
+  /* 点 + 单位法向；与 angleAt() 同一口径（±1.2 单位的割线），但不算三角函数 */
+  function sampleAt(route, s) {
+    var p = lerpAt(route, s);
+    _sx = p[0]; _sy = p[1];
+    var p0 = lerpAt(route, s - 1.2), p1 = lerpAt(route, s + 1.2);
+    var dx = p1[0] - p0[0], dy = p1[1] - p0[1], len = Math.hypot(dx, dy) || 1;
+    _snx = -dy / len; _sny = dx / len;
+  }
+  var _bandBuf = new Float64Array(2 * 130);       // 右侧点复用缓冲
   function bandPath(route, sFront, sRear, off, halfW, segs, prof) {
-    var left = [], right = [], k, u, s, p, ang, nx, ny, w, o;
     segs = segs || 12;
+    if (_bandBuf.length < (segs + 1) * 2) _bandBuf = new Float64Array((segs + 1) * 2);
+    var buf = _bandBuf, d = '', k, u, s, w, i2 = 0;
     for (k = 0; k <= segs; k++) {
       u = k / segs;
       s = sFront + (sRear - sFront) * u;
-      p = pointAt(route, s); ang = angleAt(route, s);
-      nx = -Math.sin(ang); ny = Math.cos(ang);
+      sampleAt(route, s);
       w = halfW * (prof ? prof(u) : 1);
-      o = off;
-      left.push([p.x + nx * (o + w), p.y + ny * (o + w)]);
-      right.push([p.x + nx * (o - w), p.y + ny * (o - w)]);
+      d += (k === 0 ? 'M' : 'L') + cf(_sx + _snx * (off + w)) + ' ' + cf(_sy + _sny * (off + w));
+      buf[i2++] = _sx + _snx * (off - w);
+      buf[i2++] = _sy + _sny * (off - w);
     }
-    var d = 'M' + f1(left[0][0]) + ' ' + f1(left[0][1]);
-    for (k = 1; k <= segs; k++) d += 'L' + f1(left[k][0]) + ' ' + f1(left[k][1]);
-    for (k = segs; k >= 0; k--) d += 'L' + f1(right[k][0]) + ' ' + f1(right[k][1]);
+    for (k = i2 - 2; k >= 0; k -= 2) d += 'L' + cf(buf[k]) + ' ' + cf(buf[k + 1]);
     return d + 'Z';
   }
 
@@ -972,6 +1007,8 @@
     /* “没动就不重画”阀值：屏幕位移 < 0.25px 就不值得重算几何+写 DOM
        （全网适配档 k≈0.21 时 0.25px ≈ 24 m，列车 16.7 m/s → 约 1.4 s 才需要重画一次）*/
     var eps = clamp(0.25 / Math.max(view.k, 0.01), 0.02, 2.0);
+    var prec = view.k < CFG.lodK ? 1 : 0.1;        // 小缩放整数化坐标（P0-2）
+    geoPrec = prec;
     trains.forEach(function (tr, ti) {
       var grp = trainGroups[ti];
       if (!grp) return;
@@ -982,10 +1019,10 @@
       var ld = tr._ld;
       var doorQ = Math.round(tr.door * 50);          // 门状态按 1/50 量化（开门动画中会连续变化）
       var moved = !ld || ld.epoch !== drawEpoch || ld.routeKey !== tr.routeKey ||
-        ld.dir !== tr.dir || ld.spec !== spec || ld.doorQ !== doorQ ||
+        ld.dir !== tr.dir || ld.spec !== spec || ld.doorQ !== doorQ || ld.prec !== prec ||
         Math.abs(tr.posKm - ld.km) >= ld.eps;
       if (!moved) return;
-      tr._ld = { epoch: drawEpoch, km: tr.posKm, dir: tr.dir, routeKey: tr.routeKey, spec: spec, doorQ: doorQ, eps: eps };
+      tr._ld = { epoch: drawEpoch, km: tr.posKm, dir: tr.dir, routeKey: tr.routeKey, spec: spec, doorQ: doorQ, eps: eps, prec: prec };
       var route = ROUTES[tr.routeKey];
       var CL = spec.carLen, CG = spec.carGap, HW = spec.carHW;
       total = spec.cars;
@@ -3633,11 +3670,14 @@
       ROUTES['1main'].mapAt[0] > 40 && ROUTES[L2].mapAt[0] > 40 &&
       ROUTES['1main'].mapAt[ROUTES['1main'].mapAt.length - 1] < ROUTES['1main'].length - 40);
 
-    /* 列车几何：车体轮廓顶点到路径的距离应等于设计半宽 */
+    /* 列车几何：车体轮廓顶点到路径的距离应等于设计半宽（测试固定用 0.1 精度，不受缩放档影响；
+       小缩放整数化的偏差由下一条断言单独盖） */
     var maxErr = 0;
     (function () {
+      var savedPrec = geoPrec; geoPrec = 0.1;
       var route = ROUTES['1main'], s = route.mapAt[10];
       var d = bandPath(route, s, s - CFG.carLen, 0, CFG.carHW, 14, function () { return 1; });
+      geoPrec = savedPrec;
       var nums = d.replace(/[MZ]/g, ' ').split('L').join(' ').trim().split(/\s+/).map(Number);
       for (var i = 0; i + 1 < nums.length; i += 2) {
         var px = nums[i], py = nums[i + 1];
@@ -3650,6 +3690,23 @@
       }
     })();
     chk('车体轮廓与线路中心线距离 = 半宽（<0.25）', maxErr < 0.25, f2(maxErr));
+
+    chk('小缩放整数化：偏差 ≤ 理论最大 √0.5≈0.71 单位，且 d 字符串更短（P0-2）', (function () {
+      var route = ROUTES['1main'], s = route.mapAt[10];
+      var savedPrec = geoPrec;
+      geoPrec = 0.1; var hi = bandPath(route, s, s - CFG.carLen, 0, CFG.carHW, 14, function () { return 1; });
+      geoPrec = 1;   var lo = bandPath(route, s, s - CFG.carLen, 0, CFG.carHW, 14, function () { return 1; });
+      geoPrec = savedPrec;
+      var A = hi.replace(/[MZ]/g, ' ').split('L').join(' ').trim().split(/\s+/).map(Number);
+      var B = lo.replace(/[MZ]/g, ' ').split('L').join(' ').trim().split(/\s+/).map(Number);
+      var maxd = 0;
+      for (var i = 0; i + 1 < A.length && i + 1 < B.length; i += 2) {
+        maxd = Math.max(maxd, Math.hypot(A[i] - B[i], A[i + 1] - B[i + 1]));
+      }
+      /* 整数模式下单点 x/y 各最多偏 0.5 单位 → 距离最大 √0.5≈0.7071；在 k=0.44 下 ≈ 0.31 px（亚像素） */
+      chk.__prec = '最大偏差 ' + f2(maxd) + ' 单位（理论上限 0.71）；d 长度 ' + hi.length + ' → ' + lo.length;
+      return maxd <= 0.71 + 1e-9 && lo.length < hi.length;
+    })(), chk.__prec);
 
     /* 全程运行（1 号线主线）：逐站停靠、不超速、终点折返 */
     var sim = cloneState();
