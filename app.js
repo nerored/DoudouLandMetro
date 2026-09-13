@@ -1,12 +1,12 @@
 /* =============================================================================
- * app.js - 豆豆国的地铁（成都地铁全网）：示意线路图 + 8 车厢列车运行模拟
+ * app.js - 豆豆国的地铁（成都地铁全网 + 有轨电车蓉2号线）：示意线路图 + 列车运行模拟
  * 纯 vanilla JS（无依赖、无构建）。依赖 data.js 暴露的 window.METRO。
  *
  * 主要模块：
  *   1. 路径采样（Catmull-Rom 平滑曲线 -> 弧长参数化，供列车沿线路行驶）
  *   2. 底图装饰（网格 / 街区 / 道路 / 河流 / 公园）
  *   3. 线路、车站、站名标签（防重叠）
- *   4. 8 车厢列车（按弧长排布，沿切线方向贴合线路）
+ *   4. 列车（地铁 8 车厢 / 有轨电车 5 节，按弧长排布，沿切线方向贴合线路）
  *   5. 运行状态机（加速-巡航-制动-停站-开关门-折返-交路切换-目标站导航）
  *   6. 视图（Pointer Events 平移/捏合/双击，自适应缩放与边界约束）
  * ========================================================================== */
@@ -712,7 +712,7 @@
   }
 
   function layoutLabels() {
-    /* 只排布可视区域内的站名（366 站全量排布会卡） */
+    /* 只排布可视区域内的站名（398 站全量排布会卡） */
     var pad = 260 / Math.max(view.k, 0.01);
     var bx0 = (-view.tx) / view.k - pad, by0 = (-view.ty) / view.k - pad;
     var bx1 = (stage.w - view.tx) / view.k + pad, by1 = (stage.h - view.ty) / view.k + pad;
@@ -1161,7 +1161,7 @@
   function updateNextMarks(dtRaw) {
     var now = performance.now();
     var groups = {};
-    /* 小舞台（手机）上气泡只给当前控制列车：17 列车的话站名上方会被贴满。
+    /* 小舞台（手机）上气泡只给当前控制列车：18 列车的话站名上方会被贴满。
        强调圈（下一站在哪）看颜色就能认，继续全画，不牺牲“每列车都有下一站标记”。 */
     var onlyActiveBubbles = stage.w < CFG.smallPillW;
     trains.forEach(function (tr, ti) {
@@ -2380,7 +2380,7 @@
     toastT = setTimeout(function () { el.classList.remove('show'); }, 2600);
   }
 
-  /* 站点列表：按线路/交路分组的折叠块 + 搜索（366 站，搜索是必需的） */
+  /* 站点列表：按线路/交路分组的折叠块 + 搜索（398 站，搜索是必需的） */
   var groupEls = [];
   var lastScrolledKey = null;
   /* 手机上从列表定位时，先把抽屉收到 peek 那一档，否则视角移了也看不见 */
@@ -4651,7 +4651,7 @@
                   setTab('stations');
                   var docScrolled = window.scrollX !== 0 || window.scrollY !== 0 ||
                     document.documentElement.scrollTop !== 0 || document.body.scrollTop !== 0;
-                  var bodyScrolls = body.scrollHeight > body.clientHeight;      // 366 站，必须可滚
+                  var bodyScrolls = body.scrollHeight > body.clientHeight;      // 398 站，必须可滚
                   var oy = getComputedStyle(body).overflowY;
                   var stageOverflow = getComputedStyle($('stage')).overflow;
                   setTab('train');
