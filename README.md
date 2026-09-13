@@ -390,10 +390,10 @@ $ for S in 1400x900 1024x768 800x600; do W=${S%x*}; H=${S#*x};
     ALL=1 ./tools/headless-selftest.sh \
       "http://localhost:8080/_probe-frame.html?w=$W&h=$H&src=index.html%3Fselftest%3D1" 1100x1000
   done
-SELFTEST-PASS checks 104 pass 104    (1400x900，iPad 横屏 / 桌面)
-SELFTEST-PASS checks 104 pass 104    (1024x768)
-SELFTEST-PASS checks 104 pass 104    (800x600)
-SELFTEST-PASS checks 104 pass 104    (390x844，手机竖屏)
+SELFTEST-PASS checks 105 pass 105    (1400x900，iPad 横屏 / 桌面)
+SELFTEST-PASS checks 105 pass 105    (1024x768)
+SELFTEST-PASS checks 105 pass 105    (800x600)
+SELFTEST-PASS checks 105 pass 105    (390x844，手机竖屏)
 ```
 
 **线上地址同样跑一遍**（GitHub Pages，带 cache-buster；以下为最近一次发版的实际输出）：
@@ -414,7 +414,7 @@ $ for S in 1430x995 1054x863 830x695; do
 SELFTEST-PASS checks 92 pass 92     线上 1400x900（窗口 1430x995）
 SELFTEST-PASS checks 92 pass 92     线上 1024x768（窗口 1054x863）
 SELFTEST-PASS checks 92 pass 92     线上 800x600（窗口 830x695）
-  P 版本戳已从 version.json 读取（http 环境） | 2026-09-13.0204 · 791e01c
+  P 版本戳来自 index.html 内联常量，且与静态资源 ?v= 一致 | 内联=2026-09-13.2311/8987fa8 静态引用 3 个 · ?v= 2026-09-13.2311
   P 可见站名标签无明显重叠（最大遮挡 < 25%） | 可见 20 / 6 / 4 个标签，最差 19.8% / 14.7% / 9.5%
   P 触控目标 ≥44px（tab / 17 个线路色块 / 站点行 / HUD 按钮） | 全部 ≥44px
   P 抽屉三档（peek/half/full）算得对，且收起时仍看得到把手与 tab | peek 可见 57 · half 460 · full 760（面板高 900）
@@ -427,7 +427,11 @@ SELFTEST-PASS checks 92 pass 92     线上 800x600（窗口 830x695）
 > 注：`version.json` 的 `commit` 指向那次**功能提交**（`tools/bump-version.sh` 生成时取当前 HEAD，
 > 所以版本戳提交本身不会把自己写进去），不是 `HEAD` 本身。
 
-**本轮（有轨电车蓉2号线，2026-09-13）新增的 6 条断言（自检 98 → 104）**：
+**本轮（性能批次 1/2：P0-3 / P1-1 / P0-1 / P0-2 / P1-2，2026-09-13）自检 104 → 105 项**
+（新增「小缩放整数化偏差 ≤ 理论上限 0.71 单位且 d 更短」；版本戳断言改写成「内联常量与静态 ?v= 一致」并加严）；
+每项的改前/改后数字见 `PERFORMANCE.md` §5.4.1~§5.4.7。
+
+**上一轮（有轨电车蓉2号线，2026-09-13）新增的 6 条断言（自检 98 → 104）**：
 
 | 断言 | 实测 |
 |---|---|
