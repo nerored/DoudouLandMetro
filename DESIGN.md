@@ -120,12 +120,12 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
 - **Accessibility**: 原生 button；文字 13.5px；长名省略号
 - **Layout**: `stack`，父级 `.panel-body` 是滚动归属
 
-### train-8car（地图上的列车：地铁 8 车厢 / 有轨电车 5 节）
+### train-8car（地图上的列车：地铁 8 车厢 / 有轨电车 5 节 / 自创专线 1 个头像）
 - **Structure**: 每线一列一个 `<g class="train">`，里面 N 节车厢 `<g>`；每节只有**少量** path：
   `car-body`（车体）/ `car-stripe`（线路色带）/ `car-roof`（车顶空调机组）/ `car-win`（侧窗带）/ `car-door-leaf`（门叶）/
   `car-gap`（门洞 + 车厢间风挡缝）/ `car-nose`·`car-lamp`（仅车头）/ `car-tail`·`car-lamp.rear`（仅车尾）
   + 每节的 `train-halo` / `train-shadow`。每节的细节必须合并进少量 `d`（一条 path 装多条子路径），
-  禁止「一节车几十个 path」——18 列车 ×（地铁 8 / 电车 5）节，元素数必须是同量级。
+  禁止「一节车几十个 path」——19 列车 ×（地铁 8 / 电车 5 / 头像 1）节，元素数必须是同量级。
 - **画法约定（展开视图）**: 车体是一条沿线路弧长的带（`bandPath()`，永远贴着轨道切线）；
   **中心线画车顶**（线路色带 + 两台空调机组），**两侧画侧窗带与车门**；两端各有驾驶室端面。
 - **车头 vs 车尾必须一眼可辨**: 车头 = 前 22% 用 smoothstep 收成流线鼻锥（最窄 0.42 半宽）
@@ -143,11 +143,17 @@ peek / 半开 / 全开），桌面上同一套内容变成右侧固定 dock。�
 - **品类涂装**: 地铁 = 白车身 + 线路色腰线；有轨电车（`.train.tram`）= **车身直接用线路色铺满 + 浅色窗带**，
   车顶机组与色带改浅色 —— 一眼分得开，且两者颜色都取所属线路的 `color`（线路色只表示线路）。
 - **保留**: 点击命中（`hitTrainDist`）、`active` 高亮、halo/shadow、选中圈 `train-sel`、静音/视口裁剪逻辑。
+- **头像列车（`CFG.avatar`，自创线路专用）**: 线路数据带 `avatar` 图片时，`specOf()` 返回 `CFG.avatar`，
+  这条线不画车厢，改画**圆底 + 圆形头像 + 线路色圆环**（`avatar-danza.png` 自带圆形透明边，不用 clipPath）：
+  半径 `r 26` 地图单位；渲染时按 `minScreenPx 9` 反算缩放，**缩到全网也看得见**；圆环粗细给 `ring / 缩放`，
+  屏幕上恒定；光晕用一条圆形 `path` 放进 `.train-halo`（与其它列车共用脉动动画，也是「每列车都有光晕」
+  那条自检断言要数的 path）；选中圈 `train-sel` 跟着头像放大。除「画什么」以外，定位/亚帧插值/视口裁剪/
+  点击命中/跟随标签与其它列车**完全相同**（不许另搞一套）。
 
-### train-card（每线一列，共 18 张，横向 reel）
+### train-card（每线一列，共 19 张，横向 reel）
 - **Structure**: `<button class="tchip"><i class="tchip-dot"></i><b class="tchip-line">6号线</b><span class="tchip-pos">望丛祠 → 兰家沟</span></button>`
 - **Variants**: `on`（当前控制列车：线路色描边 + 浅底）
-- **Layout**: `reel`（横向滑动）；**这是 18 列车唯一的切换入口**，所以不能藏进二级菜单
+- **Layout**: `reel`（横向滑动）；**这是 19 列车唯一的切换入口**，所以不能藏进二级菜单
 
 ### kpi（键值对）
 - **Structure**: `<span class="kpi"><i>预计到达</i><b>4 分 12 秒</b></span>`

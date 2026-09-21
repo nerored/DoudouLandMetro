@@ -14,6 +14,23 @@
   'use strict';
 
   var M = window.METRO;
+
+  /* 自创线路（用户手写，不是 OSM 生成物）：data-custom.js 提供 window.METRO_CUSTOM。
+     必须在下面派生 TRACKS / ROUTES / LINES 之前并进来，之后所有绘制与交互都按普通线路走。 */
+  function mergeCustomData(base, custom) {
+    if (!base || !custom || base.__customMerged) return;
+    base.__customMerged = true;
+    (custom.stations || []).forEach(function (s) {
+      if (s && s.id && !base.byId[s.id]) { base.stations.push(s); base.byId[s.id] = s; }
+    });
+    Object.keys(custom.tracks || {}).forEach(function (k) {
+      if (!base.tracks[k]) base.tracks[k] = custom.tracks[k];
+    });
+    (custom.lines || []).forEach(function (l) {
+      if (l && l.key) { base.lines.push(l); base.lineColors[l.key] = l.color; }
+    });
+  }
+  mergeCustomData(M, window.METRO_CUSTOM);
   var NS = 'http://www.w3.org/2000/svg';
 
   /* ------------------------------------------------------------------ 配置 */
@@ -43,6 +60,10 @@
     lodHz: 15,
     midHz: 30,
     tram: { cars: 5, carLen: 8.6, carGap: 0.9, carHW: 2.6 },
+    /* 自创线路的「头像列车」：不画车厢，画一个圆形头像框（图片由线路数据的 avatar 指定）。
+       r = 头像半径（地图单位）；minScreenPx = 屏幕上的最小半径（缩到全网也看得见）；
+       ring = 圆环粗细（按 1/缩放 给，屏幕上粗细恒定） */
+    avatar: { cars: 1, carLen: 0, carGap: 0, carHW: 0, r: 26, minScreenPx: 9, ring: 2.6 },
     tramPlatHalf: 15,      // 电车站台比地铁站台小一圈（图元上也要能区分）
     tramPlatHW: 6.0,
     platHalf: 20,          // 站台长度的一半（地图单位）
@@ -146,6 +167,8 @@
 
   function resetAllTrains() {
     trains.forEach(function (tr) { resetTrain(tr, false); });
+    /* 当前控制列车在始发站要播「欢迎乘坐…本次列车终点站为…」；其余列车保持“起点站不报站” */
+    if (state) state.aDepart = false;
     etaCache = [];
     if (world) world.style.setProperty('--line', ROUTES[state.routeKey].color);
     recomputeEta();
@@ -381,7 +404,10 @@
      所以默认交路与列车顺序不能直接用 Object.keys，要按 M.lines 的顺序来。 */
   var DEFAULT_ROUTE = ROUTES['1main'] ? '1main' : ROUTE_KEYS[0];
   var LINES = (M.lines || []).map(function (l) {
-    return { key: l.key, name: l.name, short: l.short, badge: l.badge || l.key, kind: l.kind || '', color: l.color };
+    return {
+      key: l.key, name: l.name, short: l.short, badge: l.badge || l.key, kind: l.kind || '', color: l.color,
+      avatar: l.avatar || ''        // 自创线路的「头像列车」图片（普通线路没有）
+    };
   });
   var LINE_BY_KEY = {};
   LINES.forEach(function (l) { LINE_BY_KEY[l.key] = l; });
@@ -931,15 +957,44 @@
   function buildTrains() {
     var wrap = svg('g', { id: 'trains' }, world);
     trains.forEach(function (tr, ti) {
+      var lineKey = ROUTES[tr.routeKey].lineKey;
       var spec = specOf(tr);
-      var g = svg('g', { class: 'train' + (isTram(ROUTES[tr.routeKey].lineKey) ? ' tram' : ''), 'data-train': ti }, wrap);
+      var g = svg('g', { class: 'train' + (isTram(lineKey) ? ' tram' : ''), 'data-train': ti }, wrap);
       g.style.setProperty('--line', ROUTES[tr.routeKey].color);
+      var sel = svg('circle', { class: 'train-sel', r: 9 }, g);
+      var els = [];
+      /* 自创线路的「头像列车」：圆底 + 圆形头像 + 线路色圆环（图片已按圆形裁好，不用 clipPath） */
+      if (isAvatarLine(lineKey)) {
+        var av = svg('g', { class: 'train-avatar' }, g);
+        var R = spec.r;
+        /* 光晕：比头像大一圈的白色圆盘 + 线路色描边（与其它列车同一套 .train-halo 观感/脉动动画，
+           也是「每列车都有光晕」那条自检断言要数的 path） */
+        var hr = R * 1.34;
+        var haloG = svg('g', { class: 'train-halo' }, av);
+        haloG.style.setProperty('--line', ROUTES[tr.routeKey].color);
+        svg('path', {
+          d: 'M0,' + (-hr) + 'A' + hr + ',' + hr + ' 0 1,0 0,' + hr + 'A' + hr + ',' + hr + ' 0 1,0 0,' + (-hr) + 'Z'
+        }, haloG);
+        var rec = {
+          avatar: av,
+          bg: svg('circle', { class: 'av-bg', cx: 0, cy: 0, r: R }, av),
+          ring: svg('circle', { class: 'av-ring', cx: 0, cy: 0, r: R }, av),
+          img: svg('image', {
+            class: 'av-img', x: -R, y: -R, width: 2 * R, height: 2 * R,
+            preserveAspectRatio: 'xMidYMid slice',
+            href: avatarSrc(LINE_BY_KEY[lineKey].avatar)
+          }, av)
+        };
+        rec.ring.style.stroke = ROUTES[tr.routeKey].color;
+        els.push(rec);
+        trainGroups.push({ g: g, sel: sel, els: els, avatar: true });
+        regLine(lineKey, g);
+        return;
+      }
       var shadow = svg('g', { class: 'train-shadow', transform: 'translate(2.2,3.2)' }, g);
       var halo = svg('g', { class: 'train-halo' }, g);
       halo.style.setProperty('--line', ROUTES[tr.routeKey].color);
-      var sel = svg('circle', { class: 'train-sel', r: 9 }, g);
       var cars = svg('g', null, g);
-      var els = [];
       for (var i = 0; i < spec.cars; i++) {
         var car = svg('g', null, cars);
         var last = i === spec.cars - 1;
@@ -963,10 +1018,22 @@
     });
   }
 
-  /* 每列车按**线路品类**取几何：地铁 8 节（CFG），有轨电车 5 节短车（CFG.tram）。
-     其余绘制/交互/动效完全同一套（只是参数不同） */
+  /* 每列车按**线路品类**取几何：地铁 8 节（CFG）、有轨电车 5 节短车（CFG.tram）、
+     自创线路画一个头像（CFG.avatar）。其余绘制/交互/动效完全同一套 */
   function specOf(tr) {
-    return isTram(ROUTES[tr.routeKey].lineKey) ? CFG.tram : CFG;
+    var lineKey = ROUTES[tr.routeKey].lineKey;
+    if (isAvatarLine(lineKey)) return CFG.avatar;
+    return isTram(lineKey) ? CFG.tram : CFG;
+  }
+  /* 「头像列车」：线路数据里带 avatar 图片的线路（目前只有自创的蛋仔专线） */
+  function isAvatarLine(lineKey) {
+    var l = LINE_BY_KEY[lineKey];
+    return !!(l && l.avatar);
+  }
+  /* 头像图片地址：带版本号防缓存（与三处静态引用同一套约定） */
+  function avatarSrc(name) {
+    var v = window.__BUILD_VERSION;
+    return name + (typeof v === 'string' && v ? '?v=' + v : '');
   }
   function totalLen(sp) { return sp.cars * sp.carLen + (sp.cars - 1) * sp.carGap; }
 
@@ -1063,6 +1130,20 @@
       grp.g.classList.toggle('offscreen', !vis);
       if (!vis) return;
       grp.g.classList.toggle('active', ti === activeIdx);
+      /* 头像列车：定位到车头位置，并按缩放放大，保证屏幕上至少 minScreenPx 半径 */
+      if (grp.avatar && spec.r) {
+        var el0 = grp.els[0];
+        var ap = pointAt(route, sHead);
+        var sc = Math.max(1, (spec.minScreenPx / Math.max(view.k, 0.02)) / spec.r);
+        el0.avatar.setAttribute('transform', 'translate(' + f1(ap.x) + ',' + f1(ap.y) + ') scale(' + f2(sc) + ')');
+        el0.ring.setAttribute('stroke-width', f2(spec.ring / sc));      // 屏幕上粗细恒定
+        grp.sel.setAttribute('cx', f1(ap.x));
+        grp.sel.setAttribute('cy', f1(ap.y));
+        grp.sel.setAttribute('r', f2(spec.r * sc * 1.32));
+        grp.sel.style.stroke = route.color;
+        grp.sel.style.display = (ti === activeIdx) ? '' : 'none';
+        return;
+      }
       for (var i = 0; i < total; i++) {
         var isHead = i === 0, isTail = i === total - 1;
         var fS = sHead - dir * i * (CL + CG);
@@ -1258,7 +1339,7 @@
   function updateNextMarks(dtRaw) {
     var now = performance.now();
     var groups = {};
-    /* 小舞台（手机）上气泡只给当前控制列车：18 列车的话站名上方会被贴满。
+    /* 小舞台（手机）上气泡只给当前控制列车：19 列车的话站名上方会被贴满。
        强调圈（下一站在哪）看颜色就能认，继续全画，不牺牲“每列车都有下一站标记”。 */
     var onlyActiveBubbles = stage.w < CFG.smallPillW;
     trains.forEach(function (tr, ti) {
@@ -1387,7 +1468,10 @@
       lineElems[k].forEach(function (el) { el.classList.toggle('line-off', !on); });
     });
     var solo = Object.keys(ui.showLines || {}).length > 0;
-    $('legend').classList.toggle('filtering', solo);
+    /* 图例已经搬进「图例」tab，地图上不再有 #legend 浮层 —— 这里必须判空，
+       否则点一下线路色块就在这里抛异常（筛选生效了，但色块选中态和 toast 永远不会更新） */
+    var lgBox = $('legend');
+    if (lgBox) lgBox.classList.toggle('filtering', solo);
     /* 线路色块的选中态（线路 tab 里的 17 个 chip） */
     var box = $('lgLines');
     if (box) {
@@ -1620,6 +1704,7 @@
 
   function resetState(keepTarget) {
     resetTrain(state, keepTarget);
+    state.aDepart = false;      // 复位 = 新一趟车：始发站要播「欢迎乘坐…终点站为…」
     if (world) world.style.setProperty('--line', ROUTES[state.routeKey].color);
     recomputeEta();
   }
@@ -1742,7 +1827,7 @@
       else if (st.phaseT < t2) { st.doorPhase = 'open'; st.door = 1; }
       else if (st.phaseT < t3) { st.doorPhase = 'closing'; st.door = 1 - (st.phaseT - t2) / CFG.closeT; }
       else { st.doorPhase = 'closed'; st.door = 0; }
-      /* 报站时机：开门（到站）→ 关门警报 → 发车（下一站） */
+      /* 报站时机：到站（开门）→ 关门警报 → 发车（区间报前方到站，始发站报欢迎词） */
       if (!st.aOpened) { st.aOpened = true; announce(st, 'open'); }
       if (st.phaseT >= t2 && !st.aClosing) { st.aClosing = true; announce(st, 'closing'); }
       if (st.phaseT >= t3 && !st.aDepart) { st.aDepart = true; announce(st, 'depart'); }
@@ -2918,6 +3003,8 @@
     master.connect(ctx.destination);
     audio.ctx = ctx;
     audio.master = master;
+    /* 音色表在 Chrome 上是异步加载的：加载完刷新缓存（英文音色可能晚到） */
+    try { window.speechSynthesis.addEventListener('voiceschanged', refreshVoices); } catch (e0) { void e0; }
 
     /* —— 合成的地铁环境声（4s 无缝循环）—— */
     var g = ctx.createGain();
@@ -2990,23 +3077,51 @@
     });
   }
 
-  function zhVoice() {
-    if (!('speechSynthesis' in window)) return null;
+  /* 音色：中文走 zh-*；英文优先 en-US（成都地铁真车英文是美音，配音员来自弗吉尼亚州），
+     再退 en-GB / 任意 en。getVoices() 在 Chrome 首次可能返回空，缓存最近一次非空结果。 */
+  var voiceCache = null;
+  function voices() {
+    if (!('speechSynthesis' in window)) return [];
     var vs = window.speechSynthesis.getVoices() || [];
-    for (var i = 0; i < vs.length; i++) if (/^zh/i.test(vs[i].lang)) return vs[i];
+    if (vs.length) voiceCache = vs;
+    return voiceCache || vs;
+  }
+  function firstVoice(re) {
+    var vs = voices();
+    for (var i = 0; i < vs.length; i++) if (re.test(vs[i].lang)) return vs[i];
     return null;
+  }
+  function zhVoice() { return firstVoice(/^zh/i); }
+  function enVoice() { return firstVoice(/^en[-_]US/i) || firstVoice(/^en[-_]GB/i) || firstVoice(/^en/i); }
+  function refreshVoices() {
+    try { voiceCache = window.speechSynthesis.getVoices() || voiceCache; } catch (e) { void e; }
   }
 
   /* 自己的语音队列（不用 speechSynthesis.speaking，iOS 上它会卡在 true 导致后续全部不发声）
      要点：① 一条一条说，上一条 onend/onerror/看门狗 之后再放下一条；
-           ② 队列最多积压 3 条，超了丢最旧的（高倍速下不会越积越多）；
-           ③ rate 取 clamp(max(1,倍速), 1, 2) —— iOS 对 >2 的语速会截断，宁可用队列排队。 */
+           ② 每条带 lang（zh 走 zh-CN / en 走 en-US），报站用 speakPair 成对入队、成对丢弃，
+              上限 4 句（两整条）——高倍速下不会越积越多，也不会中英错配；
+           ③ rate = clamp(0.95 × 倍速, 0.9, 2)，入队时快照 —— iOS 对 >2 的语速会截断，宁可用队列排队。 */
   var speechQ = [], speechBusy = false, speechWatch = null, speechSeq = 0;
 
-  function speak(text) {
+  function speechRate() { return clamp(0.95 * (ui.mult || 1), 0.9, 2); }   // 入队时快照语速
+  function enqueue(text, lang) {
+    speechQ.push({ text: text, rate: speechRate(), lang: lang });
+  }
+  /* 单条（系统提示语等）：最多积压 3 条，超了丢最旧 */
+  function speak(text, lang) {
     if (!audio.on || !text || !('speechSynthesis' in window)) return;
-    if (speechQ.length >= 3) speechQ.shift();
-    speechQ.push({ text: text, rate: clamp(0.95 * (ui.mult || 1), 0.9, 2) });   // 入队时快照语速
+    enqueue(text, lang || 'zh');
+    while (speechQ.length > 3) speechQ.shift();
+    pumpSpeech();
+  }
+  /* 报站：中英成对入场（成都地铁先中文后英文）。成对入队、成对丢弃——
+     否则高倍速丢队列时会把某条的英文留下、中文丢掉，听感变成“只说英文”。 */
+  function speakPair(zh, en) {
+    if (!audio.on || !('speechSynthesis' in window)) return;
+    if (zh) enqueue(zh, 'zh');
+    if (en) enqueue(en, 'en');
+    while (speechQ.length > 4) speechQ.splice(0, 2);   // 最多积压两整条（4 句）
     pumpSpeech();
   }
 
@@ -3015,14 +3130,15 @@
     if (!('speechSynthesis' in window)) { speechQ = []; return; }
     var item = speechQ.shift();
     var text = item.text;
+    var isEn = item.lang === 'en';
     var ss = window.speechSynthesis;
     var u;
     try { u = new SpeechSynthesisUtterance(text); } catch (e) { void e; speechQ = []; return; }
-    u.lang = 'zh-CN';
+    u.lang = isEn ? 'en-US' : 'zh-CN';
     /* 语音语速：基础 0.95（略慢一点更清楚），随面板倍速加快，封顶 2（iOS 对 >2 会截断） */
-    u.rate = clamp(0.95 * (ui.mult || 1), 0.9, 2);
+    u.rate = item.rate || speechRate();
     u.pitch = 1.0;
-    var v = zhVoice();
+    var v = isEn ? enVoice() : zhVoice();
     if (v) u.voice = v;
     speechBusy = true;
     var myId = ++speechSeq;
@@ -3086,7 +3202,12 @@
     var el = $('ttsNote');
     if (!el) return;
     if (!audio.on) { el.textContent = ''; el.className = 'tts-note'; return; }
-    if (audio.ttsOK) { el.textContent = '语音正常：到站/开门/关门/发车会朗读并显示字幕'; el.className = 'tts-note ok'; return; }
+    if (audio.ttsOK) {
+      el.textContent = enVoice()
+        ? '语音正常：中英双语报站（先中文后英文），字幕同步显示'
+        : '语音正常：报站朗读中文；本机没有英文音色，英文只上字幕';
+      el.className = 'tts-note ok'; return;
+    }
     if (audio.ttsSilent || audio.ttsError) {
       el.textContent = '系统语音不可用（iOS 主屏模式常见）：以提示音 + 字幕代替；用 Safari 打开同地址即有语音';
       el.className = 'tts-note warn';
@@ -3095,17 +3216,86 @@
     el.textContent = '语音待触发…';
   }
 
-  /* 报站文案（纯函数，便于自检） */
+  /* 报站文案（纯函数，便于自检）。句式对齐成都地铁的固定播报：
+     始发站报「欢迎乘坐…本次列车终点站为…」、区间报「前方到站…」、终点站单独一套清客词；
+     到站与换乘信息中英双语，其余提示只说中文（成都轨道集团口径）。品牌一律「豆豆国」。 */
+  function lineEn(key) {
+    var l = LINE_BY_KEY[key];
+    if (l && l.kind === '有轨电车') return 'Tram Line Rong 2';
+    if (l && l.kind === '市域铁路') return 'Line S3';
+    if (l && l.kind === '专线') return 'Eggy Line';
+    return 'Metro Line ' + key;
+  }
+  function transferZh(keys) { return (keys || []).map(lineVoiceTag).join('、'); }
+  function transferEn(keys) { return (keys || []).map(lineEn).join(' and '); }
+  /* 换乘站的信息靠文案区分（成都地铁真车是换乘站男声、普通站女声；
+     本应用只有单一 TTS 音色，无法按站切换声音，只保留文案差异） */
   function announceText(kind, ctxObj) {
-    if (kind === 'open') return ctxObj.zh + '站到了，列车开门，请注意安全，请先下后上';
-    if (kind === 'arrive') return ctxObj.zh + '站到了，请下车，注意列车与站台之间的空隙';
-    if (kind === 'closing') return '车门即将关闭，请勿靠近车门';
+    var zh = ctxObj.zh || '', next = ctxObj.next || '';
+    if (kind === 'terminal') {
+      return '各位乘客，本次列车的终点站' + zh + '到了，请带好随身物品下车，请注意站台与车厢之间的间隙。' +
+        '欢迎您再次乘坐豆豆国' + lineVoiceTag(ctxObj.line);
+    }
+    if (kind === 'welcome') {
+      var tag = lineVoiceTag(ctxObj.line) + (ctxObj.loop ? ctxObj.loopDir + '列车' : '');
+      var s = '乘客您好，欢迎乘坐豆豆国' + tag + '。';
+      if (!ctxObj.loop && ctxObj.terminal) s += '本次列车终点站为' + ctxObj.terminal + '。';
+      s += '列车运行中，请站稳扶牢。';
+      if (next) s += '前方到站' + next + '，' + (transferZh(ctxObj.nextTransfers)
+        ? '换乘' + transferZh(ctxObj.nextTransfers) + '的乘客请提前做好准备。'
+        : '下车的乘客请提前做好准备。');
+      return s;
+    }
     if (kind === 'depart') {
-      var base = lineVoiceTag(ctxObj.line);
-      var tag = ctxObj.loop ? base + ctxObj.loopDir + '列车' : base;
-      return '欢迎乘坐豆豆国' + tag + '，下一站 ' + ctxObj.next;
+      if (!next) return '';
+      if (ctxObj.nextIsTerminal) return '前方到站是本次列车的终点站' + next + '，请带好随身物品，准备下车';
+      return '前方到站' + next + '，' + (transferZh(ctxObj.nextTransfers)
+        ? '换乘' + transferZh(ctxObj.nextTransfers) + '的乘客请提前做好准备'
+        : '下车的乘客请提前做好准备');
+    }
+    if (kind === 'open') {
+      if (ctxObj.isTerminal) return announceText('terminal', ctxObj);
+      return zh + (/站$/.test(zh) ? '' : '站') + '到了，' + (transferZh(ctxObj.transfers)
+        ? '换乘' + transferZh(ctxObj.transfers) + '的乘客请下车，'
+        : '下车的乘客请先下后上，') + '请注意站台与车厢之间的间隙';
+    }
+    if (kind === 'arrive') return zh + (/站$/.test(zh) ? '' : '站') + '到了，请下车，请注意站台与车厢之间的间隙';
+    if (kind === 'closing') return '车门即将关闭，请勿靠近车门';
+    return '';
+  }
+
+  /* 英文字幕：与中文同一套时机，只在到站/换乘/终点信息上出现（与官方口径一致） */
+  function announceEn(kind, ctxObj) {
+    var en = ctxObj.en || ctxObj.zh || '', next = ctxObj.nextEn || ctxObj.next || '';
+    if (kind === 'terminal' || (kind === 'open' && ctxObj.isTerminal)) {
+      return 'This train has arrived at its terminal station: ' + en + '. Please take all your belongings with you. ' +
+        'Thank you for taking Doudou Land ' + lineEn(ctxObj.line) + '.';
+    }
+    if (kind === 'open' || kind === 'arrive') {
+      var tf0 = transferEn(ctxObj.transfers);
+      return 'We are arriving at ' + en + '.' + (tf0 ? ' Transfer to ' + tf0 + '.' : '') +
+        ' Please mind the gap between the train and the platform.';
+    }
+    if (kind === 'closing') return 'The doors are closing. Please stand clear of the doors.';
+    if (kind === 'welcome') {
+      var s = 'Welcome aboard Doudou Land ' + lineEn(ctxObj.line) + '.';
+      if (!ctxObj.loop && ctxObj.terminalEn) s += ' This train is bound for ' + ctxObj.terminalEn + '.';
+      if (next) s += ' The next station is ' + next + '.';
+      return s;
+    }
+    if (kind === 'depart') {
+      if (!next) return '';
+      if (ctxObj.nextIsTerminal) return 'The next station is the terminal station: ' + next + '.';
+      var tf1 = transferEn(ctxObj.nextTransfers);
+      return 'The next station is ' + next + '.' + (tf1 ? ' Transfer to ' + tf1 + '.' : '');
     }
     return '';
+  }
+
+  /* 始发站（当前方向上第一个停靠站）：发车要报欢迎词 */
+  function atOriginStop(st) {
+    var r = ROUTES[st.routeKey];
+    return st.curId === (st.dir > 0 ? r.ids[0] : r.ids[r.ids.length - 1]);
   }
 
   /* 发车报站用的“下一站”（停站中 nextIdx 还指向本车所在的站） */
@@ -3128,37 +3318,53 @@
     if (!isActive(st) || st.silent) return;
     var r = ROUTES[st.routeKey];
     var after = nextStopAfter(st);
+    var cur = M.byId[st.curId] || {};
+    var nxt = after ? (M.byId[after] || {}) : {};
+    var termId = r.loop ? '' : (st.dir > 0 ? r.ids[r.ids.length - 1] : r.ids[0]);
+    var term = termId ? (M.byId[termId] || {}) : {};
     var ctxObj = {
-      zh: M.byId[st.curId] ? M.byId[st.curId].zh : '',
-      next: after && M.byId[after] ? M.byId[after].zh : '',
+      zh: cur.zh || '', en: cur.en || '',
+      next: nxt.zh || '', nextEn: nxt.en || '',
+      terminal: term.zh || '', terminalEn: term.en || '',
       line: LINE_BY_KEY[r.lineKey].key,
       loop: !!r.loop,
-      loopDir: r.loop ? dirName(r, st.dir) : ''
+      loopDir: r.loop ? dirName(r, st.dir) : '',
+      transfers: (cur.tr || []).filter(function (k) { return k !== r.lineKey; }),
+      nextTransfers: (nxt.tr || []).filter(function (k) { return k !== r.lineKey; }),
+      nextIsTerminal: !!termId && after === termId,
+      isTerminal: !r.loop && !after
     };
-    var text = kind === 'open' ? announceText('open', ctxObj)
-      : kind === 'arrive' ? announceText('arrive', ctxObj)
-        : kind === 'closing' ? announceText('closing', ctxObj)
-          : (after ? announceText('depart', ctxObj) : '欢迎乘坐豆豆国' + lineVoiceTag(ctxObj.line) + '，本次列车已到达终点站');
-    /* 字幕：不管能不能出声都显示报站内容（iOS 主屏 standalone 对 TTS 有限制时也有反馈） */
-    showAnnounce(text);
+    /* 发车时机按位置分三种：始发站=欢迎词、区间=前方到站、终点站=清客词 */
+    var k = kind === 'depart' ? (atOriginStop(st) ? 'welcome' : (after ? 'depart' : 'terminal')) : kind;
+    var text = announceText(k, ctxObj);
+    var en = announceEn(k, ctxObj);
+    /* 字幕：不管能不能出声都显示报站内容（中英双语，iOS 主屏 standalone 限制 TTS 时也有反馈） */
+    showAnnounce(text, en);
     if (!audio.on) return;
-    /* 语音与倍速同步：任何倍速都朗读（rate 按倍率加速），只是正在说话时跳过下一条避免叠读 */
-    if (kind === 'open' || kind === 'arrive') { chime('open'); speak(text); }
-    else if (kind === 'closing') { chime('warn'); speak(text); }
-    else { chime('close'); speak(text); }
+    /* 语音与倍速同步：任何倍速都朗读（rate 按倍率加速），只是正在说话时自动排队避免叠读 */
+    if (kind === 'open' || kind === 'arrive') chime('open');
+    else if (kind === 'closing') chime('warn');
+    else chime('close');
+    /* 成都地铁：先中文后英文（英文只在到站/换乘/终点信息上出现） */
+    speakPair(text, en);
   }
 
   /* 报站字幕条（舞台下方居中；TTS 被限制时也能“看”到报站） */
   var aBox = null, aTimer = null;
-  function showAnnounce(text) {
+  function showAnnounce(text, en) {
     if (!text) return;
     if (!aBox) {
       aBox = document.createElement('div');
       aBox.id = 'announce';
       aBox.className = 'announce';
+      aBox.appendChild(document.createElement('span')).className = 'an-zh';
+      aBox.appendChild(document.createElement('span')).className = 'an-en';
       $('stage').appendChild(aBox);
     }
-    aBox.textContent = text;
+    aBox.firstChild.textContent = text;
+    var enEl = aBox.lastChild;
+    enEl.textContent = en || '';
+    enEl.style.display = en ? 'block' : 'none';
     aBox.classList.add('show');
     if (aTimer) clearTimeout(aTimer);
     aTimer = setTimeout(function () { aBox.classList.remove('show'); }, 6000);
@@ -3648,7 +3854,7 @@
       var fwd = dirName(r, 1), back = dirName(r, -1);
       var hud = boundText({ routeKey: r.key, nextIdx: 1, dir: 1 });
       var line = LINE_BY_KEY[r.lineKey].key;
-      var speak = announceText('depart', {
+      var speak = announceText('welcome', {
         zh: '', next: '二仙桥', line: line, loop: true, loopDir: fwd
       });
       chk.__loopdir = '正向=' + fwd + ' 反向=' + back + ' 数据绕行=' + (r.ccw ? '逆时针' : '顺时针') +
@@ -3963,13 +4169,13 @@
       var okInline = !!inline && /^\d{4}-\d{2}-\d{2}/.test(inline) && !!window.__BUILD_COMMIT;
       var srcs = [].slice.call(document.querySelectorAll('script[src],link[rel=stylesheet]'))
         .map(function (e) { return e.getAttribute('src') || e.getAttribute('href'); })
-        .filter(function (u) { return /\/(data\.js|app\.js|style\.css)\?v=/.test(u); });
+        .filter(function (u) { return /\/(data\.js|data-custom\.js|app\.js|style\.css)\?v=/.test(u); });
       var vers = {};
       srcs.forEach(function (u) { vers[/\?v=([^&]*)/.exec(u)[1]] = 1; });
       var keys = Object.keys(vers);
       chk.__ver3 = '内联=' + inline + '/' + window.__BUILD_COMMIT + ' 静态引用 ' + srcs.length + ' 个 · ?v= ' + keys.join(',');
-      /* 硬约束：三个静态引用都得带 ?v=，且都与内联常量一致（不一致 = 发版漏同步，缓存会击穿） */
-      return okInline && srcs.length === 3 && keys.length === 1 && keys[0] === inline &&
+      /* 硬约束：四个静态引用都得带 ?v=，且都与内联常量一致（不一致 = 发版漏同步，缓存会击穿） */
+      return okInline && srcs.length === 4 && keys.length === 1 && keys[0] === inline &&
         (BUILD_VERSION && BUILD_VERSION.version === inline) &&
         /\d{4}-\d{2}-\d{2}/.test($('verText').textContent);
     })(), chk.__ver3);
@@ -4039,7 +4245,7 @@
       return ok;
     })(), chk.__np2);
 
-    chk('到站/关门/发车三个时机都有报站（字幕 + 语音计数递增）', (function () {
+    chk('到站/关门/发车三个时机都有报站（中英字幕 + 语音计数递增）', (function () {
       var bak = snap(state), bakAudio = audio.on;
       var ann0 = audio.announcements, seen = [];
       setSound(true);
@@ -4053,7 +4259,8 @@
       var ok = seen.length >= 3 && audio.announcements > ann0 &&
         seen.some(function (t) { return /站到了/.test(t); }) &&
         seen.some(function (t) { return /车门即将关闭/.test(t); }) &&
-        seen.some(function (t) { return /下一站/.test(t); });
+        seen.some(function (t) { return /前方到站/.test(t); }) &&
+        seen.some(function (t) { return /The next station is|We are arriving at/.test(t); });
       chk.__ann3 = seen.length + ' 条字幕 · 语音计数 ' + ann0 + '→' + audio.announcements + ' · ' +
         seen.map(function (t) { return t.slice(0, 9); }).join('/');
       setSound(bakAudio);
@@ -4254,12 +4461,14 @@
       ui.mult = 2; announce(state, 'closing');
       ui.mult = 10; announce(state, 'depart');
       var qr = speechQ.map(function (x) { return x.rate; });
-      chk.__rate = '首条=' + (q[0] || '-') + ' 队列=' + qr.join(',');
+      var ql = speechQ.map(function (x) { return x.lang; }).join(',');
+      chk.__rate = '首条=' + (q[0] || '-') + ' 队列=' + qr.join(',') + ' 语言=' + ql;
       ui.mult = bakMult; setSound(bakOn);
       try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
       speechQ = []; speechBusy = false;
-      return Math.abs(q[0] - 0.95) < 0.01 && qr.length === 2 &&
-        Math.abs(qr[0] - 1.9) < 0.01 && qr[1] === 2;
+      /* 每条报站都是「中文 + 英文」两句；积压上限 4 句（两整条），超出时成对丢最旧的 */
+      return Math.abs(q[0] - 0.95) < 0.01 && qr.length === 3 && ql === 'en,zh,en' &&
+        Math.abs(qr[0] - 1.9) < 0.01 && qr[1] === 2 && qr[2] === 2;
     })(), chk.__rate);
 
     chk('语音不叠读：正在说时再报站只入队，不并发（避免听不清）', (function () {
@@ -4279,7 +4488,7 @@
       announce(state, 'open');
       announce(state, 'closing');
       announce(state, 'depart');
-      var ok = speaks === 1 && speechQ.length === 2;
+      var ok = speaks === 1 && speechQ.length === 3;
       chk.__nodup = 'speak 调用=' + speaks + ' 队列=' + speechQ.length;
       ui.mult = bakMult; setSound(bakOn);
       try { if (desc) Object.defineProperty(window, 'speechSynthesis', desc); } catch (e2) { void e2; }
@@ -4302,12 +4511,47 @@
       return same && clicked && enough;
     })(), chk.__spd);
 
-    chk('渲染元素齐备（全部车站/标签 + 每线一列、车厢数按线路品类：地铁 8 / 有轨电车 5）',
+    chk('渲染元素齐备（全部车站/标签 + 每线一列、车厢数按线路品类：地铁 8 / 有轨电车 5 / 专线头像 1）',
       Object.keys(stationEls).length === M.stations.length && labelEls.length === M.stations.length &&
       trainGroups.length === trains.length &&
       trains.every(function (tr, i) { return trainGroups[i].els.length === specOf(tr).cars; }),
       Object.keys(stationEls).length + '/' + labelEls.length + '/' + trainGroups.length + '×' +
         (trainGroups[0] ? trainGroups[0].els.length : 0));
+
+    /* 自创线路（data-custom.js 手写并入，不经过生成器）：蛋仔专线 + 头像列车 */
+    chk('自创线路「蛋仔专线」：7 站在轨道上、头像列车按缩放放大、报站不叫地铁', (function () {
+      var dz = LINE_BY_KEY.DZ, r = ROUTES.DZ1;
+      if (!dz || !r) { chk.__dz = '没有 DZ / DZ1'; return false; }
+      var first = M.byId.xipaishanjing, last = M.byId.danzaidao;
+      var ti = -1;
+      trains.forEach(function (t, i) { if (ROUTES[t.routeKey].lineKey === 'DZ') ti = i; });
+      var g = ti >= 0 ? trainGroups[ti] : null;
+      var rec = g && g.els[0];
+      var href = rec && rec.img ? (rec.img.getAttribute('href') || '') : '';
+      /* 图例可能正筛着别的线路 → 先全开再重画，拿到头像真实的定位 transform，最后恢复 */
+      var bakFilter = JSON.stringify(ui.showLines);
+      if (!lineVisible('DZ')) { ui.showLines = {}; applyLineFilter(); }
+      invalidateTrains(); renderTrains();
+      var tf = rec && rec.avatar ? (rec.avatar.getAttribute('transform') || '') : '';
+      ui.showLines = JSON.parse(bakFilter); applyLineFilter();
+      var onPath = r.ids.every(function (id, i) {
+        var s = M.byId[id];
+        if (!s) return false;
+        return projectOnPolyline(r, s.x, s.y).d < 2 && r.kmAt[i] >= r.kmAt[0];
+      });
+      var welcome = announceText('welcome', {
+        zh: '西派善境', next: '蛋仔广场', line: 'DZ', loop: false, loopDir: '', terminal: '蛋仔岛站'
+      });
+      chk.__dz = (first ? first.zh : '?') + '→' + (last ? last.zh : '?') + ' · ' + r.ids.length + ' 站 ' +
+        f2(r.kmLength) + ' km · km0=' + f2(r.kmAt[0]) + ' projErr=' + f2(r.projErr) +
+        ' · 头像=' + (href.split('/').pop().split('?')[0] || '无') + ' · transform=' + (tf || '空') +
+        ' · 报站=' + welcome.slice(0, 16);
+      return !!first && !!last && first.zh === '西派善境' && last.zh === '蛋仔岛站' &&
+        r.ids.length === 7 && r.kmAt[0] < 0.6 && r.projErr < 6 && onPath &&
+        /豆豆国蛋仔专线/.test(welcome) && !/地铁/.test(welcome) &&
+        !!rec && !!rec.img && /avatar-danza\.png/.test(href) &&
+        /^translate\(/.test(tf) && /scale\(/.test(tf) && rec.ring.style.stroke !== '';
+    })(), chk.__dz);
 
     chk('地铁 8 节、有轨电车 5 节，且整列车能停在端点折返段内',
       CFG.cars === 8 && CFG.tram.cars === 5 &&
@@ -4356,10 +4600,10 @@
       tramLine.badge === '蓉2' && tramLine.kind === '有轨电车' &&
       lineShort('T2') === '有轨电车蓉2号线' && lineVoiceTag('T2') === '有轨电车蓉2号线' &&
       !/地铁/.test(lineVoiceTag('T2')) &&
-      /豆豆国有轨电车蓉2号线/.test(announceText('depart',
-        { zh: '天河路', next: '龙吟', line: 'T2', loop: false, loopDir: '' })),
-      lineVoiceTag('T2') + ' | ' + announceText('depart',
-        { zh: '天河路', next: '龙吟', line: 'T2', loop: false, loopDir: '' }));
+      /豆豆国有轨电车蓉2号线/.test(announceText('welcome',
+        { zh: '天河路', next: '龙吟', line: 'T2', loop: false, loopDir: '', terminal: '成都西站' })),
+      lineVoiceTag('T2') + ' | ' + announceText('welcome',
+        { zh: '天河路', next: '龙吟', line: 'T2', loop: false, loopDir: '', terminal: '成都西站' }));
 
     chk('图例与站点列表都写「有轨电车」（不出现「地铁」）', (function () {
       var chip = null;
@@ -4973,12 +5217,13 @@
                 /* 真实回归：模拟 iOS 引擎（onend 稍后才触发），连报“到站/关门/发车”三条
                    断言三条都被说出来（之前用 speechSynthesis.speaking 判断，iOS 上会卡住导致后两条全丢） */
                 var desc2 = Object.getOwnPropertyDescriptor(window, 'speechSynthesis');
-                var spoken = [], bakOn2 = audio.on, bakMult2 = ui.mult;
+                var spoken = [], spokenLangs = [], bakOn2 = audio.on, bakMult2 = ui.mult;
                 var stub2 = {
                   getVoices: function () { return []; },
                   cancel: function () { spoken.push('CANCEL'); },
                   speak: function (u) {
                     spoken.push(u.text);
+                    spokenLangs.push(u.lang);
                     if (u.onstart) u.onstart();
                     setTimeout(function () { if (u.onend) u.onend(); }, 30);
                   }
@@ -4987,22 +5232,33 @@
                 setSound(true);
                 speechQ = []; speechBusy = false;
                 spoken = [];
+                spokenLangs = [];
                 ui.mult = 1;
-                announce(state, 'open');
-                announce(state, 'closing');
-                announce(state, 'depart');
+                /* 按真实节奏连报三条（每条 = 中文 + 英文两句） */
+                [['open', 0], ['closing', 300], ['depart', 600]].forEach(function (it) {
+                  setTimeout(function () { announce(state, it[0]); }, it[1]);
+                });
                 setTimeout(function () {
-                  var ok = spoken.length === 3 && spoken.indexOf('CANCEL') < 0 &&
-                    /站到了/.test(spoken[0]) && /车门即将关闭/.test(spoken[1]) &&
-                    /豆豆国地铁/.test(spoken[2]) && /下一站/.test(spoken[2]);
-                  chk('连报三条（到站/关门/发车）都会说出，不漏、不 cancel', ok,
-                    spoken.map(function (t2) { return t2.slice(0, 10); }).join(' / '));
+                  var nx2 = nextStopAfter(state);
+                  var zhLines = spoken.filter(function (t2) { return /[\u4e00-\u9fa5]/.test(t2); });
+                  var enLines = spoken.filter(function (t2) { return !/[\u4e00-\u9fa5]/.test(t2); });
+                  var depOk = nx2 ? (/前方到站/.test(zhLines[2]) && zhLines[2].indexOf(M.byId[nx2].zh) >= 0)
+                    : /终点站/.test(zhLines[2]);
+                  var ok = spoken.length === 6 && spoken.indexOf('CANCEL') < 0 &&
+                    zhLines.length === 3 && enLines.length === 3 &&
+                    /站到了/.test(zhLines[0]) && /车门即将关闭/.test(zhLines[1]) && depOk &&
+                    /We are arriving at/.test(enLines[0]) && /The doors are closing/.test(enLines[1]) &&
+                    /(The next station is|terminal station)/.test(enLines[2]) &&
+                    spokenLangs.join(',') === 'zh-CN,en-US,zh-CN,en-US,zh-CN,en-US';
+                  chk('连报三条（到站/关门/发车）中英各三句都会说出（英文走 en-US），不漏、不 cancel', ok,
+                    spokenLangs.join(',') + ' | 中: ' + zhLines.map(function (t2) { return t2.slice(0, 8); }).join(' / ') +
+                    ' | 英: ' + enLines.map(function (t2) { return t2.slice(0, 10); }).join(' / '));
                   ui.mult = bakMult2;
                   setSound(bakOn2);
                   try { if (desc2) Object.defineProperty(window, 'speechSynthesis', desc2); } catch (e3) { void e3; }
                   speechQ = []; speechBusy = false;
                   done();
-                }, 900);
+                }, 2000);
               }, 340);
             }, 40);
           }, CFG.tapMs + 120);
@@ -5026,7 +5282,7 @@
             document.title = (out.ok ? 'SELFTEST-PASS' : 'SELFTEST-FAIL') + ' ' +
               out.checks.filter(function (c) { return !c.pass; }).map(function (c) { return c.name; }).join('|');
           });
-        } catch (e) { document.title = 'SELFTEST-ERROR ' + e.message; }
+        } catch (e) { document.title = 'SELFTEST-ERROR ' + e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 3).join(' || '); }
       }, 300);
     }
   }
@@ -5057,7 +5313,7 @@
     hardReload: hardReload, resetReloadBudget: resetReloadBudget, get lastReloadUrl() { return lastReloadUrl; },
     navigateTo: function (u) { navigateTo(u); },
     get versionInfo() { return BUILD_VERSION; }, get remoteVersion() { return REMOTE_VERSION; },
-    audio: audio, setSound: setSound, initAudio: initAudio, announce: announce, announceText: announceText,
+    audio: audio, setSound: setSound, initAudio: initAudio, announce: announce, announceText: announceText, announceEn: announceEn,
     chime: chime, speak: speak, nextStopAfter: nextStopAfter, showAnnounce: showAnnounce,
     reservedBoxes: reservedBoxes, updateTtsHint: updateTtsHint, unlockAudio: unlockAudio,
     applyLineFilter: applyLineFilter, buildLegend: buildLegend, lineElems: lineElems, lineVisible: lineVisible,

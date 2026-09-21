@@ -736,6 +736,8 @@ body {
   text-align: center;
 }
 .announce.show { opacity: 1; transform: translate(-50%, 0); }
+/* 报站字幕：上中文、下英文（到站/换乘信息双语，与成都地铁口径一致）；英文行复用既有字号 token */
+.announce .an-en { display: block; margin-top: 2px; font-size: var(--t-sm); font-weight: 600; opacity: .82; }
 
 .toast {
   position: absolute;
@@ -855,6 +857,11 @@ body {
 #world .lbl-g.hot .lbl-zh { fill: var(--line-dark); }
 
 #world .train-shadow { fill: rgba(20, 40, 60, .18); }
+/* 自创线路的「头像列车」：白圆底 + 圆形头像 + 线路色圆环（圆环粗细由 JS 按缩放给，屏幕上恒定） */
+#world .train-avatar .av-bg { fill: #fff; stroke: none; }
+#world .train-avatar .av-img { pointer-events: none; }
+#world .train-avatar .av-ring { fill: none; stroke-linejoin: round; }
+#world .train.active .train-avatar .av-ring { stroke-width: 3.6; }
 #world .train-halo path {
   fill: rgba(255, 255, 255, .92);
   stroke: var(--line);
