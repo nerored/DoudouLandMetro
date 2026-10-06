@@ -20,8 +20,24 @@
   function mergeCustomData(base, custom) {
     if (!base || !custom || base.__customMerged) return;
     base.__customMerged = true;
+    var stIndex = {};
+    (base.stations || []).forEach(function (s) { if (s && s.id) stIndex[s.id] = s; });
     (custom.stations || []).forEach(function (s) {
-      if (s && s.id && !base.byId[s.id]) { base.stations.push(s); base.byId[s.id] = s; }
+      if (!s || !s.id) return;
+      var targets = [];
+      /* 注意：data.js 是 JSON 生成的，stations[] 与 byId{} 里是**两份内容相同但互不相干的拷贝**，
+         改一处不会反映到另一处。经过既有站的自创线路（S4 穿过 8 个既有站）必须两边都并，
+         否则地图标签/图例（读 stations）与悬浮窗/派车（读 byId）会显示不一致。 */
+      [base.byId[s.id], stIndex[s.id]].forEach(function (t) { if (t && targets.indexOf(t) < 0) targets.push(t); });
+      if (!targets.length) { base.stations.push(s); base.byId[s.id] = s; return; }
+      targets.forEach(function (m) {
+        (s.lines || []).forEach(function (k) { if (m.lines.indexOf(k) < 0) m.lines.push(k); });
+        ['tr', 'planned'].forEach(function (f) {
+          if (!s[f] || !s[f].length) return;
+          if (!m[f]) m[f] = [];
+          s[f].forEach(function (k) { if (m[f].indexOf(k) < 0) m[f].push(k); });
+        });
+      });
     });
     Object.keys(custom.tracks || {}).forEach(function (k) {
       if (!base.tracks[k]) base.tracks[k] = custom.tracks[k];
@@ -4552,6 +4568,60 @@
         !!rec && !!rec.img && /avatar-danza\.png/.test(href) &&
         /^translate\(/.test(tf) && /scale\(/.test(tf) && rec.ring.style.stroke !== '';
     })(), chk.__dz);
+
+    /* ---------------- 自创环线 S4（2026-10-06 按用户手写清单并入 data-custom.js） ---------------- */
+    var s4Line = (M.lines || []).filter(function (x) { return x.key === 'S4'; })[0];
+    var s4Route = ROUTES['S4'];
+    chk('自创环线「S4」：11 站按清单顺序、标 loop、8 个既有站并入、3 个新站上线', (function () {
+      if (!s4Line || !s4Route) return false;
+      var want = ['成都医学院', '龙安', '清江西路', '清江西路北（西单商场·巧克力酒店）', '市二医院',
+        '星月', '成都西站', '市一医院', '中医大·省医院', '双流国际机场3航站楼东西侧站', '星月南方'];
+      var got = s4Route.ids.map(function (id) { return M.byId[id] ? M.byId[id].zh : '?' + id; });
+      var onPath = s4Route.ids.every(function (id, i) {
+        var s = M.byId[id];
+        return !!s && projectOnPolyline(s4Route, s.x, s.y).d < 2 && s4Route.kmAt[i] >= s4Route.kmAt[0];
+      });
+      var merged = ['s101', 's293', 's114', 's084', 's345', 's113', 's155', 'zhongyida'].every(function (id) {
+        return M.byId[id] && M.byId[id].lines.indexOf('S4') >= 0 && M.byId[id].tr.indexOf('S4') >= 0;
+      }) && ['s101', 's293', 's114', 's084', 's345', 's113', 's155', 'zhongyida'].every(function (id) {
+        /* stations[] 与 byId{} 是两份拷贝（data.js 是 JSON）：两边都要并到，地图标签才会带上 S4 */
+        var s = M.stations.filter(function (x) { return x.id === id; })[0];
+        return !!s && s.lines.indexOf('S4') >= 0 && s.tr.indexOf('S4') >= 0;
+      });
+      var planned = (M.byId.s293.planned || []).join(',') === '18,30,S5' &&
+        (M.byId.s113.planned || []).join(',') === 'S5' &&
+        (M.byId.shuangliut3.planned || []).join(',') === '30';
+      chk.__s4 = got[0] + '→' + got[10] + ' · ' + s4Route.ids.length + ' 站 ' + f2(s4Route.kmLength) +
+        ' km · km0=' + f2(s4Route.kmAt[0]) + ' projErr=' + f2(s4Route.projErr);
+      return s4Route.loop === true && s4Route.ids.length === 11 && got.join(',') === want.join(',') &&
+        s4Route.label === '成都医学院 ↔ 星月南方' && s4Route.kmAt[0] < 0.6 && s4Route.projErr < 2 &&
+        onPath && merged && planned;
+    })(), chk.__s4);
+
+    chk('S4 环线跑满一圈回到首站（含最长 36 km 闭合腿，不折返）', (function () {
+      if (!s4Route) return false;
+      var s = newTrain('S4');
+      var t = 0, flipped = false, maxPos = 0, left = false, back = false;
+      while (t < 400000 && !back) {
+        stepTrain(s, 0.5); t += 0.5;
+        if (s.dir !== 1) flipped = true;
+        if (s.posKm > maxPos) maxPos = s.posKm;
+        if (s.curId !== s4Route.ids[0]) left = true;
+        if (left && s.curId === s4Route.ids[0] && s.phase === 'dwell') back = true;
+      }
+      chk.__s4lap = '回到首站=' + back + ' 里程=' + f2(s.odometer) + ' km / 一圈 ' + f2(s4Route.kmLength) +
+        ' km 方向翻转=' + flipped + ' 用时 ' + f2(t) + 's';
+      return back && !flipped && maxPos > s4Route.kmLength * 0.985 && Math.abs(s.odometer - s4Route.kmLength) < 0.6;
+    })(), chk.__s4lap);
+
+    chk('S4 开门方向按原图录入（11 项，唯一左侧 = 成都西站）', (function () {
+      var d = (s4Line && s4Line.doors) || {};
+      var lefts = Object.keys(d).filter(function (k) { return d[k] === 'left'; });
+      chk.__s4door = Object.keys(d).length + ' 项 · 左侧=' + lefts.map(function (k) {
+        return M.byId[k] ? M.byId[k].zh : k;
+      }).join('、');
+      return Object.keys(d).length === 11 && lefts.length === 1 && lefts[0] === 's113';
+    })(), chk.__s4door);
 
     chk('地铁 8 节、有轨电车 5 节，且整列车能停在端点折返段内',
       CFG.cars === 8 && CFG.tram.cars === 5 &&
