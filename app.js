@@ -3004,9 +3004,9 @@
   /* —— 车站报站录音（用户提供）——
      键 = '线路key|站id|时机'，值 = 仓库里的音频文件名（相对路径，零依赖、file:// 也能用）。
      命中时该条报站的**中英 TTS 整条换成录音**（字幕照常显示两行）；文件拉不到/解码失败会自动回退到这句话的 TTS 文本。
-     时机语义：'depart' = 离开上一站时的「前方到站〔站id〕」预告（到站前播）；'open' = 开门时的「〔站id〕站到了」。
-     目前只有 S3（资阳线）福田站**到站前**：futian.m4a（AAC-LC 48kHz 17.0s）。 */
-  var VOICE_CLIPS = { 'S3|s311|depart': 'futian.m4a' };
+     时机语义：'depart' = 离开上一站时的「前方到站〔站id〕」预告（到站前播）；'open' = 开门时的「〔站id〕站到了」（到站）。
+     目前只有 S3（资阳线）福田站两句：「到站前」= futian-next.m4a（17.0s）、「到站」= futian-arrive.m4a（15.9s），均 AAC-LC 48kHz。 */
+  var VOICE_CLIPS = { 'S3|s311|depart': 'futian-next.m4a', 'S3|s311|open': 'futian-arrive.m4a' };
   function voiceClipFor(lineKey, stationId, kind) { return VOICE_CLIPS[lineKey + '|' + stationId + '|' + kind] || null; }
 
   function bgmEnabled(flag) {
@@ -4600,44 +4600,50 @@
       return ok;
     })(), chk.__nodup);
 
-    /* S3 福田录音的资源链路：真实 fetch → decodeAudioData（异步，等完成后才断言；用轮询代替定长等待） */
+    /* S3 福田两条录音的资源链路：真实 fetch → decodeAudioData（异步轮询等待；两条都要能解码） */
     (function () {
-      var res = { buf: null, err: '' };
+      var want = [['futian-next.m4a', 17.045], ['futian-arrive.m4a', 15.851]];
+      var res = want.map(function () { return { buf: null, err: '' }; });
       var ac = audio.ctx, own = false;
-      if (!ac) { try { var ACC = window.AudioContext || window.webkitAudioContext; ac = new ACC(); own = true; } catch (e0) { res.err = String(e0 && e0.message || e0); } }
+      if (!ac) { try { var ACC = window.AudioContext || window.webkitAudioContext; ac = new ACC(); own = true; } catch (e0) { res[0].err = String(e0 && e0.message || e0); } }
       if (ac && window.fetch) {
-        fetch(avatarSrc('futian.m4a')).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.arrayBuffer();
-        }).then(function (ab) {
-          return new Promise(function (ok2, bad2) { ac.decodeAudioData(ab, ok2, bad2); });
-        }).then(function (buf) {
-          res.buf = buf;
-          if (own && ac.close) ac.close();
-        }).catch(function (e1) { res.err = String(e1 && e1.message || e1); });
+        want.forEach(function (w, i) {
+          fetch(avatarSrc(w[0])).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.arrayBuffer();
+          }).then(function (ab) {
+            return new Promise(function (ok2, bad2) { ac.decodeAudioData(ab, ok2, bad2); });
+          }).then(function (buf) { res[i].buf = buf; }).catch(function (e1) { res[i].err = String(e1 && e1.message || e1); });
+        });
       }
       var tries = 0;
       (function settle() {
         tries++;
-        if (res.buf || res.err || tries > 6) {
-          chk('S3 福田录音能在浏览器里加载并解码（futian.m4a，约 17.0s）', !!res.buf && Math.abs(res.buf.duration - 17.045) < 0.6,
-            res.buf ? ('dur=' + res.buf.duration.toFixed(2) + 's ch=' + res.buf.numberOfChannels + ' sr=' + res.buf.sampleRate) : ('未完成 ' + res.err));
+        var allSettled = res.every(function (r) { return r.buf || r.err; });
+        if (allSettled || tries > 6) {
+          if (own && ac.close) ac.close();
+          var durOk = res.every(function (r, i) { return !!r.buf && Math.abs(r.buf.duration - want[i][1]) < 0.6; });
+          var detail = res.map(function (r, i) {
+            return want[i][0] + '=' + (r.buf ? (r.buf.duration.toFixed(2) + 's/' + r.buf.numberOfChannels + 'ch/' + r.buf.sampleRate) : ('失败 ' + r.err));
+          }).join(' · ');
+          chk('S3 福田两条录音都能在浏览器里加载并解码（到站前 + 到站）', durOk, detail);
           return;
         }
         setTimeout(settle, 700);
       })();
     })();
 
-    chk('S3 福田站「前方到站」播报 = 录音 futian.m4a（到站前播放；其他站/线路/时机不受影响；失败回退 TTS）', (function () {
-      var routeOk = voiceClipFor('S3', 's311', 'depart') === 'futian.m4a' &&
-        !voiceClipFor('S3', 's311', 'open') && !voiceClipFor('S3', 's311', 'closing') &&
-        !voiceClipFor('19', 's311', 'depart') && !voiceClipFor('S3', 's366', 'depart');
+    chk('S3 福田录音路由：到站前→futian-next.m4a、到站→futian-arrive.m4a（其他站/线路/时机不受影响；失败回退 TTS）', (function () {
+      var routeOk = voiceClipFor('S3', 's311', 'depart') === 'futian-next.m4a' &&
+        voiceClipFor('S3', 's311', 'open') === 'futian-arrive.m4a' &&
+        !voiceClipFor('S3', 's311', 'closing') && !voiceClipFor('19', 's311', 'depart') &&
+        !voiceClipFor('19', 's311', 'open') && !voiceClipFor('S3', 's366', 'depart');
       var bakOn = audio.on, bakActive = activeIdx, bakMult = ui.mult;
       var prevQ = speechQ.slice(), prevBusy = speechBusy;
       var played = [], realStart = startClip;
       var s3i = -1, prevCur = null, prevDir = 1;
       trains.forEach(function (t, i) { if (t.routeKey === 'S3') s3i = i; });
-      var clipOk = false, ttsOk = false, flipOk = false;
+      var preOk = false, arriveOk = false, ttsOk = false, flipOk = false;
       try {
         startClip = function (item, cb) { played.push(item.clip); cb(false); };   // 桩：不真出声
         setSound(true);
@@ -4646,15 +4652,21 @@
           prevCur = trains[s3i].curId;
           prevDir = trains[s3i].dir;
           setActive(s3i);
-          state.curId = 's366';                       // 资阳临空：下一站就是福田（到站前那一刻）
+          state.curId = 's366';                       // 资阳临空：下一站就是福田
           state.dir = 1;
           speechQ = []; speechBusy = false; speechSeq++;
           played = [];
-          announce(state, 'depart');                  // 「前方到站福田」：应走录音、不落 TTS
-          clipOk = played.length === 1 && played[0] === 'futian.m4a' &&
+          announce(state, 'depart');                  // 到站前「前方到站福田」→ futian-next.m4a
+          preOk = played.length === 1 && played[0] === 'futian-next.m4a' &&
+            speechQ.every(function (x) { return !x.clip; });
+          state.curId = 's311';
+          speechQ = []; speechBusy = false; speechSeq++;
+          played = [];
+          announce(state, 'open');                    // 到站「福田站到了」→ futian-arrive.m4a
+          arriveOk = played.length === 1 && played[0] === 'futian-arrive.m4a' &&
             speechQ.every(function (x) { return !x.clip; });
           speechQ = []; speechBusy = false; speechSeq++; played = [];
-          announce(state, 'open');                    // 开门「资阳临空站到了」：不受影响，照常 TTS
+          announce(state, 'closing');                 // 关门：不受影响，照常 TTS
           ttsOk = played.length === 0 && speechQ.length >= 1 &&
             speechQ.every(function (x) { return !!x.text && !x.clip; });
         }
@@ -4672,8 +4684,8 @@
         if (s3i >= 0 && prevCur !== null) { trains[s3i].curId = prevCur; trains[s3i].dir = prevDir; }
         try { setActive(bakActive); } catch (e0) { void e0; }
       }
-      chk.__cliproute = '路由=' + routeOk + ' 到站前=' + clipOk + ' 开门照常=' + ttsOk + ' 回退=' + flipOk;
-      return routeOk && clipOk && ttsOk && flipOk;
+      chk.__cliproute = '路由=' + routeOk + ' 到站前=' + preOk + ' 到站=' + arriveOk + ' 关门照常=' + ttsOk + ' 回退=' + flipOk;
+      return routeOk && preOk && arriveOk && ttsOk && flipOk;
     })(), chk.__cliproute);
 
     chk('速度选项 = 1x/2x/5x/10x，且高倍速下子步不丢步', (function () {
