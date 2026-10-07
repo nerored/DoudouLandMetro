@@ -685,6 +685,10 @@ msedge.exe --headless=new --virtual-time-budget=9000 --window-size=1180,820 \
 
 ## 10. 更新记录
 
+* 2026-10-07 · **HUD 信息区点击穿透 + 多线路站点可选「命中线路」**：HUD 的状态胶囊/详情两块纯信息区改 `pointer-events: none`
+  （卡片本体早已放行、品牌行保持可点），点地图不再被 HUD 挡住；站点悬浮窗对多线路站逐线一个色块 chip（`#spLines`），
+  选中后 ETA 与「让 X 列车运行到该站」都按所选线路；站点列表的行按所在分组的线路做默认命中。自检 112 → **114 项**。
+
 * 2026-10-07 · **S3 福田站两句 + 资阳临空站一句报站换成录音**（`futian-next.m4a` 17.0 s / `futian-arrive.m4a` 15.9 s / `ziyanglinkong-next.m4a` 10.7 s，均用户提供、AAC-LC 48 kHz）：
   `VOICE_CLIPS`（键 = `线路key|站id|时机`）命中时该条报站的中英 TTS 整条换成录音、字幕照常两行；
   `'depart'` 时机按**下一站**匹配（离开上一站时就播「前方到站 X」，到站前）、`'open'` 按当前站匹配——初版误接在开门时机，同日修正。

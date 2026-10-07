@@ -464,7 +464,13 @@
     return c.length ? ROUTES[c[0]].lineKey : null;
   }
   /* 目标站应由哪条交路服务（优先与当前交路同线路） */
-  function serviceForStation(id, curKey) {
+  function serviceForStation(id, curKey, preferLine) {
+    if (preferLine) {
+      var cands0 = servicesContaining(id);
+      for (var j0 = 0; j0 < cands0.length; j0++) {
+        if (ROUTES[cands0[j0]].lineKey === preferLine) return cands0[j0];
+      }
+    }
     if (curKey && ROUTES[curKey] && ROUTES[curKey].ids.indexOf(id) >= 0) return curKey;
     var cands = servicesContaining(id);
     if (!cands.length) return null;
@@ -2704,13 +2710,13 @@
   function isActive(st) { return st === state; }
 
   /* 到任意站点的乘车时间预估：用同一套状态机预演一遍（不修改真实状态） */
-  function etaFor(id) {
+  function etaFor(id, preferLine) {
     if (!id || !M.byId[id]) return null;
     var st = M.byId[id];
     if (st.noStop) return { ok: false, reason: (st.status || '暂不办理客运') + '·列车不停靠', stops: 0 };
     if (!state.routeKey) return { ok: false, reason: '列车未上线', stops: 0 };
     var cur = ROUTES[state.routeKey];
-    var want = serviceForStation(id, state.routeKey);
+    var want = serviceForStation(id, state.routeKey, preferLine);
     if (!want) return { ok: false, reason: '该站不在任何交路上', stops: 0 };
     if (ROUTES[want].lineKey !== cur.lineKey) {
       return {
@@ -2755,7 +2761,15 @@
     }
   }
 
-  function setTarget(id) {
+  function setTarget(id, preferLine) {
+    if (preferLine) {
+      /* 多线路站点：先把控制列车切到所选线路（后续本体按同线目标处理） */
+      var want0 = serviceForStation(id, state.routeKey, preferLine);
+      if (want0 && ROUTES[want0].lineKey && ROUTES[want0].lineKey !== ROUTES[state.routeKey].lineKey) {
+        var ti0 = trainIndexForLine(ROUTES[want0].lineKey);
+        if (ti0 >= 0) setActive(ti0);
+      }
+    }
     invalidateTrains();              // 目标变了：下一站圈/气泡要立即跟上
     if (!id) { state.target = null; state.eta = null; state.etaStops = 0; refreshPopup(); return; }
     var st = M.byId[id];
@@ -2798,7 +2812,7 @@
 
   /* ==================================================== 6. 视图（Pointer Events） */
   var pointers = new Map(), gesture = null, lastTap = { t: 0, x: 0, y: 0 };
-  var popupId = null, popupEta = null, popupEtaAt = 0, popupEtaAnchor = null, popupEtaReal = null, lastTapHandled = 0, lastGestureEnd = 0;
+  var popupId = null, popupLine = null, popupEta = null, popupEtaAt = 0, popupEtaAnchor = null, popupEtaReal = null, lastTapHandled = 0, lastGestureEnd = 0;
 
   function applyView() {
     G3D.dirty = true;
@@ -3438,7 +3452,7 @@
     openPopup(id, { x: st.x * view.k + view.tx, y: st.y * view.k + view.ty });
   }
 
-  function stationRow(id, noText) {
+  function stationRow(id, noText, lineKey) {
     var st = M.byId[id];
     if (!st) return null;
     var b = document.createElement('button');
@@ -3465,7 +3479,7 @@
     }
     if (st.status) { var t3 = document.createElement('span'); t3.className = 'tag'; t3.textContent = st.status; b.appendChild(t3); }
     b.addEventListener('click', function () {
-      setTarget(id);                 // 单击：列车运行到该站（原来的语义）
+      setTarget(id, lineKey || null);   // 单击：列车运行到该站（多线路站用所在分组的线路做默认命中）
       focusStation(id);              // 同时把视角移过去（用户要的“点一下就过去”）
       updateStationList();
     });
@@ -3515,7 +3529,7 @@
           var noText = (si > 0 && line.services.length > 1)
             ? (lineBadge(line.key) + '|Y' + (seq - from + 1))
             : (lineBadge(line.key) + '|' + String(seq + 1).padStart(2, '0'));
-          var row = stationRow(id, noText);
+          var row = stationRow(id, noText, line.key);
           if (row) body.appendChild(row);
         });
       });
@@ -4329,6 +4343,7 @@
     var st = M.byId[id];
     if (!st) return;
     popupId = id;
+    popupLine = null;
     selected = id;
     var key = (st.lines && st.lines[0]) || '1';
     setChipLine($('spLine'), key);
@@ -4343,6 +4358,7 @@
     $('spKm').textContent = stationKm(id).toFixed(2) + ' km' + (st.status && st.status !== '运营中' ? ' · ' + st.status : '');
     $('stpop').hidden = false;
     popupEtaAt = 0;
+    buildPopupLines(id);
     refreshPopup(true);
     positionPopup(at);
     labelEls.forEach(function (L) { L.g.classList.toggle('hot', L.st.id === id); });
@@ -4380,10 +4396,19 @@
     var st = M.byId[popupId];
     var now = performance.now();
     if (force || !popupEta || now - popupEtaAt > 600) {
-      popupEta = etaFor(popupId);
+      popupEta = etaFor(popupId, popupLine);
       popupEtaAt = now;
     }
     var e = popupEta;
+    var effLine = (e && e.wantKey && ROUTES[e.wantKey]) ? ROUTES[e.wantKey].lineKey : null;
+    var spb = $('spLines');
+    if (spb && !spb.hidden) {
+      Array.prototype.forEach.call(spb.children, function (b) {
+        var on0 = b.getAttribute('data-k') === effLine;
+        b.classList.toggle('on', on0);
+        b.style.background = on0 ? (b.style.color || '#666') : '#fff';
+      });
+    }
     if (e && e.ok) {
       if (e.here) {
         setCountdown('spEta', null);
@@ -4435,6 +4460,26 @@
       go.textContent = '列车运行到该站';
       go.disabled = !reachable;
     }
+  }
+
+  /* 站点悬浮窗的「命中线路」选择：多线路站逐线一个 chip，选中后 ETA/派车都按该线（data-k = 线路 key） */
+  function buildPopupLines(id) {
+    var box = $('spLines');
+    if (!box) return;
+    box.innerHTML = '';
+    var st = M.byId[id];
+    var ls = ((st && st.lines) || []).filter(function (k) { return !!LINE_BY_KEY[k]; });
+    if (ls.length < 2) { box.hidden = true; return; }
+    box.hidden = false;
+    ls.forEach(function (k) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('data-k', k);
+      b.textContent = lineShort(k);
+      b.style.color = LINE_BY_KEY[k].color || '#666';
+      b.addEventListener('click', function () { popupLine = k; refreshPopup(true); });
+      box.appendChild(b);
+    });
   }
 
   function updateScaleBar() {
@@ -4667,7 +4712,7 @@
     $('spGo').addEventListener('click', function () {
       if (!popupId) return;
       if (state.target === popupId) setTarget(null);
-      else setTarget(popupId);
+      else setTarget(popupId, popupLine);
     });
     /* （旧）顶部「控制」按钮已移除：宽屏改用面板左边缘的滑动把手 #panelRail（见 initPanelRail），
        手机用底部把手。下面直接从 HUD 的折叠点击绑定接上。 */
@@ -6109,6 +6154,48 @@
                 chk('悬浮窗“列车运行到该站”可派车', !!pick && state.target === pickId,
                   'target=' + String(state.target) + ' 期望=' + pickId + ', btn=' + $('spGo').textContent);
                 chk('悬浮窗按钮变为可取消', /取消/.test($('spGo').textContent), $('spGo').textContent);
+
+                chk('HUD 信息区不拦截地图点击（品牌行仍可点）', (function () {
+                  var hud = $('hud'), cap = $('hudCap'), det = document.querySelector('.hud-detail'), brand = $('hudBrand');
+                  var rc = cap.getBoundingClientRect();
+                  var elCap = document.elementFromPoint(rc.left + rc.width - 8, rc.top + rc.height / 2);
+                  var rd = det.getBoundingClientRect();
+                  var elDet = document.elementFromPoint(rd.left + rd.width * 0.5, rd.top + 8);
+                  var rb = brand.getBoundingClientRect();
+                  var elBrand = document.elementFromPoint(rb.left + rb.width / 2, rb.top + rb.height / 2);
+                  var nm = function (el) { return el ? (el.id || el.tagName) : 'null'; };
+                  chk.__hudpass = 'cap→' + nm(elCap) + ' det→' + nm(elDet) + ' brand在HUD内=' + hud.contains(elBrand);
+                  return !hud.contains(elCap) && !hud.contains(elDet) && hud.contains(elBrand);
+                })());
+
+                chk('多线路站点可选命中线路：逐线选项 + 按所选线路派车', (function () {
+                  var sid = 'zhongyida';
+                  var st = M.byId[sid];
+                  var bakActive = activeIdx, bakTarget = state.target, bakLine = popupLine;
+                  var ok = false, count = 0, eff = null;
+                  try {
+                    openPopup(sid);
+                    var btns = $('spLines').querySelectorAll('button');
+                    count = btns.length;
+                    var b5 = null;
+                    for (var i = 0; i < btns.length; i++) if (btns[i].getAttribute('data-k') === '5') b5 = btns[i];
+                    if (b5) b5.click();
+                    eff = (popupEta && popupEta.wantKey) ? ROUTES[popupEta.wantKey].lineKey : null;
+                    $('spGo').click();
+                    ok = count === st.lines.length && eff === '5' && state.target === sid &&
+                      ROUTES[state.routeKey].lineKey === '5';
+                  } finally {
+                    setTarget(null);
+                    popupLine = bakLine;
+                    closePopup();
+                    state.target = bakTarget;
+                    try { setActive(bakActive); } catch (e0) { void e0; }
+                    recomputeEta(); updateHud();
+                  }
+                  chk.__linepick = '选项=' + count + '/' + st.lines.length + ' 生效=' + eff +
+                    ' 派车线路=' + (state.routeKey ? ROUTES[state.routeKey].lineKey : '-');
+                  return ok;
+                })());
                 setTarget(null);
                 closePopup();
                 /* 面板：展开时右缘贴屏幕右缘；收起时只留屏右缘的把手；抽屉模式下看可见带 */

@@ -584,6 +584,14 @@ body {
   -webkit-backdrop-filter: blur(10px);
 }
 .hud > * { pointer-events: auto; }
+/* 纯信息区（状态胶囊/详情）不拦截地图点击：HUD 卡片本体已是 pointer-events:none，
+   这里把两块信息块也放行；品牌行（折叠+刷新/声音按钮）保持可点 */
+.hud-cap, .hud-detail { pointer-events: none; }
+
+/* 站点悬浮窗的「命中线路」选择器（多线路站） */
+.sp-lines { display: flex; flex-wrap: wrap; gap: 4px; }
+.sp-lines button { font: inherit; font-size: var(--t-cap); font-weight: 800; padding: 1px 9px 2px;
+  border-radius: 999px; border: 1.5px solid currentColor; background: #fff; cursor: pointer; line-height: 1.5; }
 .hud-brand {
   display: flex; align-items: center; gap: var(--s2);
   cursor: pointer; touch-action: manipulation;
