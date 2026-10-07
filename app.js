@@ -4405,8 +4405,10 @@
     if (spb && !spb.hidden) {
       Array.prototype.forEach.call(spb.children, function (b) {
         var on0 = b.getAttribute('data-k') === effLine;
+        var col0 = (LINE_BY_KEY[b.getAttribute('data-k')] || {}).color || '#666';
         b.classList.toggle('on', on0);
-        b.style.background = on0 ? (b.style.color || '#666') : '#fff';
+        b.style.background = on0 ? col0 : '#fff';
+        b.style.color = on0 ? '#fff' : col0;   /* 选中态：底色=线路色、文字改白（否则同色看不见） */
       });
     }
     if (e && e.ok) {
@@ -6181,8 +6183,10 @@
                     for (var i = 0; i < btns.length; i++) if (btns[i].getAttribute('data-k') === '5') b5 = btns[i];
                     if (b5) b5.click();
                     eff = (popupEta && popupEta.wantKey) ? ROUTES[popupEta.wantKey].lineKey : null;
+                    var cs5 = b5 ? getComputedStyle(b5) : null;
+                    var txtOk = !!(cs5 && cs5.color !== cs5.backgroundColor);   /* 选中态文字与底色不能同色 */
                     $('spGo').click();
-                    ok = count === st.lines.length && eff === '5' && state.target === sid &&
+                    ok = count === st.lines.length && eff === '5' && txtOk && state.target === sid &&
                       ROUTES[state.routeKey].lineKey === '5';
                   } finally {
                     setTarget(null);
@@ -6193,7 +6197,7 @@
                     recomputeEta(); updateHud();
                   }
                   chk.__linepick = '选项=' + count + '/' + st.lines.length + ' 生效=' + eff +
-                    ' 派车线路=' + (state.routeKey ? ROUTES[state.routeKey].lineKey : '-');
+                    ' 字色可见=' + txtOk + ' 派车线路=' + (state.routeKey ? ROUTES[state.routeKey].lineKey : '-');
                   return ok;
                 })());
                 setTarget(null);
