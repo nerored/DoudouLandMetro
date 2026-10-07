@@ -4535,6 +4535,13 @@
       if (hb) hb.setAttribute('aria-expanded', 'false');
     }
     fitView();
+    /* 启动默认：控制并跟随 1 号线列车（2026-10-08 用户要求）：跟随会拉近到 k≥3 并对中到车；
+       用户一拖动/缩放即自动退出跟随（现有行为）。?follow=0 可关；自检模式不开（各用例自设机位）。 */
+    if (!SELFTEST_MODE && !/[\?&]follow=0/.test(location.search)) {
+      var t1i = trainIndexForLine('1');
+      if (t1i >= 0) setActive(t1i);
+      setFollow(true);
+    }
     /* 调试/截图用参数：?adv=秒数 预跑运行模拟, ?follow=1 跟随, ?k=缩放, ?door=1 开门状态 */
     debugParams();
     updateHud();
@@ -6101,6 +6108,29 @@
               setTimeout(function () {
                 chk('悬浮窗“列车运行到该站”可派车', !!pick && state.target === pickId,
                   'target=' + String(state.target) + ' 期望=' + pickId + ', btn=' + $('spGo').textContent);
+                chk('启动默认跟随 1 号线：开启跟随后 active=1 号线、镜头拉近并对中（可关可恢复）', (function () {
+                  var bakActive = activeIdx, bakK = view.k, bakTx = view.tx, bakTy = view.ty, bakF = ui.follow;
+                  var ok = false;
+                  try {
+                    var t1 = trainIndexForLine('1');
+                    setActive(t1);
+                    setFollow(true);
+                    var rf = ROUTES[state.routeKey];
+                    var p = pointAt(rf, kmToMap(rf, state.posKm));
+                    var cx = p.x * view.k + view.tx, cy = p.y * view.k + view.ty;
+                    ok = ui.follow === true && activeIdx === t1 && view.k >= 3 &&
+                      Math.abs(cx - stage.w / 2) < 2 && Math.abs(cy - stage.h * 0.55) < 2;
+                  } finally {
+                    setFollow(false);
+                    view.k = bakK; view.tx = bakTx; view.ty = bakTy;
+                    clampView(); applyView();
+                    try { setActive(bakActive); } catch (e0) { void e0; }
+                    if (bakF) setFollow(true);
+                  }
+                  chk.__follow = '跟随=' + ui.follow + ' 1号线索引=' + trainIndexForLine('1') + ' 拉近后 k=' + f2(view.k);
+                  return ok;
+                })());
+
                 chk('悬浮窗按钮变为可取消', /取消/.test($('spGo').textContent), $('spGo').textContent);
 
                 chk('HUD 信息区不拦截地图点击（品牌行仍可点）', (function () {
