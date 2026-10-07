@@ -1123,9 +1123,10 @@
   };
   var T3D = { enabled: false, ready: false, reason: 'init', canvas: null, gl: null,
     prog: null, locs: null, frames: 0, instances: 0, verts: 0, meshes: {}, quad: null, disc: null };
-  var T3D_VS = 'attribute vec3 aPos;attribute vec3 aNor;attribute vec3 aCol;attribute float aLine;' +
-    'uniform mat4 uM;uniform vec3 uLight;varying vec3 vCol;varying float vLine;varying float vLit;' +
-    'void main(){gl_Position=uM*vec4(aPos,1.0);vCol=aCol;vLine=aLine;' +
+  var T3D_VS = 'attribute vec3 aPos;attribute vec3 aNor;attribute vec3 aCol;attribute float aLine;attribute float aDoor;' +
+    'uniform mat4 uM;uniform vec3 uLight;uniform float uDoor;varying vec3 vCol;varying float vLine;varying float vLit;' +
+    'void main(){vec3 p=aPos;p.x+=aDoor*uDoor;' +
+    'gl_Position=uM*vec4(p,1.0);vCol=aCol;vLine=aLine;' +
     'vLit=0.52+0.48*max(0.0,dot(aNor,uLight));}';
   var T3D_FS = 'precision mediump float;uniform vec3 uLine;uniform vec4 uTint;uniform float uMode;' +
     'varying vec3 vCol;varying float vLine;varying float vLit;' +
@@ -1140,85 +1141,236 @@
     return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
   }
 
-  /* 一节车网格：沿长度放样（若干站 × 10 点截面环）+ 两端盖；硬边平法线。
-     局部坐标：+x 车头方向，y 侧向，z 高度。顶点 10 float = 位置/法线/颜色/useLine。 */
+  /* 一节车网格 v2（更像真车）：超椭圆截面（平侧墙 + 弧形车顶 + 微内倾）+ 焊缝平滑法线；
+     白车身 + 线路色腰线；分段车窗（带顶部反光条）；两对双开门（门洞 + 门叶，门叶滑移靠 aDoor 属性 + uDoor 均匀量）；
+     车头：前脸后倾 + 挡风玻璃 + 线路色遮罩带 + 两颗前照灯；车尾：深色端面 + 两颗红灯；
+     车顶：两台空调 +（中间车况 role3）受电弓。局部坐标：+x 车头方向，y 侧向，z 高度。
+     顶点 11 float = 位置/法线/颜色/useLine/门叶滑移。 */
   function t3dCarMesh(isTram, role) {
     var spec = isTram ? CFG.tram : CFG;
     var L = spec.carLen, HWv = spec.carHW, H = CFG3D.height;
-    var us = role === 0 ? [0, 0.5, 0.76, 0.88, 1] : (role === 2 ? [0, 0.78, 0.9, 1] : [0, 1]);
-    function prof(u) {
-      if (role === 0 && u > 0.78) { var t = (u - 0.78) / 0.22; return 0.42 + 0.58 * (t * t * (3 - 2 * t)); }
-      if (role === 2 && u > 0.86) { var t2 = (u - 0.86) / 0.14; return 1 - 0.30 * (t2 * t2 * (3 - 2 * t2)); }
-      return 1;
+    var isHead = role === 0, isTail = role === 2;
+    var vp = [], vn = [], vc = [], vl = [], vd = [];
+    function emit(p, n, c, ln, dr) {
+      vp.push(p[0], p[1], p[2]); vn.push(n[0], n[1], n[2]);
+      vc.push(c[0], c[1], c[2]); vl.push(ln || 0); vd.push(dr || 0);
     }
-    var ring = [[1, 0], [1, CFG3D.winLo], [1, CFG3D.winHi], [0.86, 1], [0.26, 1],
-      [-0.26, 1], [-0.86, 1], [-1, CFG3D.winHi], [-1, CFG3D.winLo], [-1, 0]];
-    var edge = ['skirt', 'glass', 'body', 'roof', 'stripe', 'roof', 'body', 'glass', 'skirt'];
-    var PAL = {
-      skirt: { c: [0.24, 0.26, 0.30], line: 0 }, glass: { c: [0.13, 0.15, 0.19], line: 0 },
-      body: isTram ? { c: [1, 1, 1], line: 1 } : { c: [0.95, 0.96, 0.97], line: 0 },
-      roof: isTram ? { c: [1, 1, 1], line: 1 } : { c: [0.87, 0.89, 0.92], line: 0 },
-      stripe: { c: [1, 1, 1], line: 1 }, face: { c: [0.15, 0.17, 0.22], line: 0 }
-    };
-    var pos = [], nor = [], col = [], lin = [];
-    function at(u, ri) {
-      var s = prof(u);
-      return [(u - 0.5) * L, ring[ri][0] * HWv * s, ring[ri][1] * H * (0.55 + 0.45 * s)];
-    }
-    function push(p, n, c, ln) {
-      var k;
-      for (k = 0; k < 3; k++) pos.push(p[k]);
-      for (k = 0; k < 3; k++) nor.push(n[k]);
-      col.push(c[0], c[1], c[2]); lin.push(ln);
-    }
-    function tri(p0, p1, p2, c, ln) {
+    function nrm3(p0, p1, p2) {
       var ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
       var vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
       var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       var dd = Math.hypot(nx, ny, nz) || 1;
-      var n = [nx / dd, ny / dd, nz / dd];
-      /* 外法线修正：相对截面中心（0, 0.5H），反了就翻法线并换绕向 */
-      var mx = (p0[0] + p1[0] + p2[0]) / 3, my = (p0[1] + p1[1] + p2[1]) / 3, mz = (p0[2] + p1[2] + p2[2]) / 3 - H * 0.5;
-      if (n[0] * mx + n[1] * my + n[2] * mz < 0) { n = [-n[0], -n[1], -n[2]]; var tp = p1; p1 = p2; p2 = tp; }
-      push(p0, n, c, ln); push(p1, n, c, ln); push(p2, n, c, ln);
+      return [nx / dd, ny / dd, nz / dd];
     }
-    var si, e2;
-    for (si = 0; si < us.length - 1; si++) {
-      for (e2 = 0; e2 < edge.length; e2++) {
-        var pal = PAL[edge[e2]];
-        var q0 = at(us[si], e2), q1 = at(us[si], e2 + 1), q3 = at(us[si + 1], e2), q2 = at(us[si + 1], e2 + 1);
-        tri(q0, q1, q2, pal.c, pal.line);
-        tri(q0, q2, q3, pal.c, pal.line);
+    function quadFlat(f, c, ln, dr) {
+      var n = f.n;
+      emit(f.p[0], n, c, ln, dr); emit(f.p[1], n, c, ln, dr); emit(f.p[2], n, c, ln, dr);
+      emit(f.p[0], n, c, ln, dr); emit(f.p[2], n, c, ln, dr); emit(f.p[3], n, c, ln, dr);
+    }
+    function box(cx, cy, cz, hx, hy, hz, c, ln) {
+      var x0 = cx - hx, x1 = cx + hx, y0 = cy - hy, y1 = cy + hy, z0 = cz - hz, z1 = cz + hz;
+      var P = function (x, y, z) { return [x, y, z]; };
+      quadFlat({ p: [P(x0, y0, z1), P(x1, y0, z1), P(x1, y1, z1), P(x0, y1, z1)], n: [0, 0, 1] }, c, ln, 0);
+      quadFlat({ p: [P(x1, y0, z0), P(x0, y0, z0), P(x0, y1, z0), P(x1, y1, z0)], n: [0, 0, -1] }, c, ln, 0);
+      quadFlat({ p: [P(x0, y1, z0), P(x0, y1, z1), P(x1, y1, z1), P(x1, y1, z0)], n: [0, 1, 0] }, c, ln, 0);
+      quadFlat({ p: [P(x1, y0, z0), P(x1, y0, z1), P(x0, y0, z1), P(x0, y0, z0)], n: [0, -1, 0] }, c, ln, 0);
+      quadFlat({ p: [P(x1, y0, z1), P(x1, y0, z0), P(x1, y1, z0), P(x1, y1, z1)], n: [1, 0, 0] }, c, ln, 0);
+      quadFlat({ p: [P(x0, y0, z0), P(x0, y0, z1), P(x0, y1, z1), P(x0, y1, z0)], n: [-1, 0, 0] }, c, ln, 0);
+    }
+    function slantBar(x0, z0, x1, z1, hy, ht, c) {
+      var dx = x1 - x0, dz = z1 - z0, dl = Math.hypot(dx, dz) || 1;
+      var px = -dz / dl * ht, pz = dx / dl * ht;
+      var P = function (x, z, y, s) { return [x + px * s, y, z + pz * s]; };
+      quadFlat({ p: [P(x0, z0, -hy, 1), P(x1, z1, -hy, 1), P(x1, z1, hy, 1), P(x0, z0, hy, 1)], n: [pz, 0, -px] }, c, 0, 0);
+      quadFlat({ p: [P(x0, z0, -hy, -1), P(x0, z0, hy, -1), P(x1, z1, hy, -1), P(x1, z1, -hy, -1)], n: [-pz, 0, px] }, c, 0, 0);
+      quadFlat({ p: [P(x0, z0, hy, 1), P(x1, z1, hy, 1), P(x1, z1, hy, -1), P(x0, z0, hy, -1)], n: [0, 1, 0] }, c, 0, 0);
+      quadFlat({ p: [P(x1, z1, -hy, 1), P(x0, z0, -hy, 1), P(x0, z0, -hy, -1), P(x1, z1, -hy, -1)], n: [0, -1, 0] }, c, 0, 0);
+    }
+    /* ---------- 壳：截面环（归一化 yf,zf，平侧墙 + 肩弧 + 穹顶） ---------- */
+    var ring = [], eKeys = [];
+    (function () {
+      var sideZ = [0, 0.16, 0.32, 0.48, 0.62], i2, a2, zf;
+      for (i2 = 0; i2 < sideZ.length; i2++) { zf = sideZ[i2]; ring.push([1 - 0.045 * (zf / 0.62) * (zf / 0.62), zf]); }
+      for (i2 = 1; i2 <= 3; i2++) { a2 = i2 / 4 * Math.PI / 2; ring.push([0.30 + 0.665 * Math.cos(a2), 0.62 + 0.38 * Math.sin(a2)]); }
+      ring.push([0.30, 1], [0, 1.006], [-0.30, 1]);
+      for (i2 = 3; i2 >= 1; i2--) { a2 = i2 / 4 * Math.PI / 2; ring.push([-(0.30 + 0.665 * Math.cos(a2)), 0.62 + 0.38 * Math.sin(a2)]); }
+      for (i2 = sideZ.length - 1; i2 >= 0; i2--) { zf = sideZ[i2]; ring.push([-(1 - 0.045 * (zf / 0.62) * (zf / 0.62)), zf]); }
+      eKeys = ['skirt', 'body', 'stripe', 'body', 'body', 'roof', 'roof', 'roof', 'stripe', 'stripe',
+        'roof', 'roof', 'roof', 'body', 'body', 'stripe', 'body', 'skirt'];
+    })();
+    var PAL = {
+      skirt: { c: [0.21, 0.23, 0.27], line: 0 },
+      body: isTram ? { c: [1, 1, 1], line: 1 } : { c: [0.96, 0.97, 0.98], line: 0 },
+      stripe: { c: [1, 1, 1], line: 1 },
+      roof: isTram ? { c: [1, 1, 1], line: 1 } : { c: [0.84, 0.86, 0.89], line: 0 }
+    };
+    var us = isHead ? [0, 0.5, 0.76, 0.88, 1] : (isTail ? [0, 0.8, 0.9, 1] : [0, 0.5, 1]);
+    function noseT(u) { return u <= 0.76 ? 0 : Math.min(1, (u - 0.76) / 0.24); }
+    function tailT(u) { return u <= 0.86 ? 0 : Math.min(1, (u - 0.86) / 0.14); }
+    function prof(u) {
+      if (isHead) { var t = noseT(u), s2 = t * t * (3 - 2 * t); return 1 - 0.42 * s2; }
+      if (isTail) { var t2 = tailT(u), s3 = t2 * t2 * (3 - 2 * t2); return 1 - 0.16 * s3; }
+      return 1;
+    }
+    function at(u, ri) {
+      var yf = ring[ri][0], zf = ring[ri][1], s = prof(u);
+      var xs = (u - 0.5) * L;
+      if (isHead) xs -= L * 0.085 * noseT(u) * zf * zf;
+      if (isTail) xs += L * 0.04 * tailT(u) * zf * zf;
+      return [xs, yf * HWv * s, zf * H * (0.70 + 0.30 * s)];
+    }
+    /* 壳面：先收集面片，按位置焊缝法线（平滑），再发射 */
+    var faces = [];
+    (function () {
+      var si, e2;
+      for (si = 0; si < us.length - 1; si++) {
+        for (e2 = 0; e2 < ring.length - 1; e2++) {
+          var u0 = us[si], u1 = us[si + 1];
+          var p0 = at(u0, e2), p1 = at(u0, e2 + 1), p2 = at(u1, e2 + 1), p3 = at(u1, e2);
+          var n = nrm3(p0, p1, p2);
+          var mx = (p0[0] + p1[0] + p2[0] + p3[0]) / 4, my = (p0[1] + p1[1] + p2[1] + p3[1]) / 4, mz = (p0[2] + p1[2] + p2[2] + p3[2]) / 4 - H * 0.5;
+          if (n[0] * (mx - p0[0]) + n[1] * my + n[2] * mz < 0) { n = [-n[0], -n[1], -n[2]]; var tp = p1; p1 = p2; p2 = tp; }
+          faces.push({ p: [p0, p1, p2, p3], n: n, c: PAL[eKeys[e2]].c, ln: PAL[eKeys[e2]].line });
+        }
       }
-    }
-    for (e2 = 0; e2 < ring.length - 1; e2++) {           // 两端盖：避免看穿车壳
-      var a0 = at(0, e2), a1 = at(0, e2 + 1), b0 = at(1, e2), b1 = at(1, e2 + 1);
-      tri([a0[0], 0, H * 0.5], a0, a1, PAL.face.c, 0);
-      tri([b0[0], 0, H * (role === 2 ? 0.38 : 0.5)], b1, b0, PAL.face.c, 0);
-    }
-    var data = new Float32Array((pos.length / 3) * 10);
-    for (var v = 0, w = 0; v < pos.length / 3; v++) {
-      data[w++] = pos[v * 3]; data[w++] = pos[v * 3 + 1]; data[w++] = pos[v * 3 + 2];
-      data[w++] = nor[v * 3]; data[w++] = nor[v * 3 + 1]; data[w++] = nor[v * 3 + 2];
-      data[w++] = col[v * 3]; data[w++] = col[v * 3 + 1]; data[w++] = col[v * 3 + 2];
-      data[w++] = lin[v];
+    })();
+    (function () {
+      var acc = {};
+      function key(p) { return (Math.round(p[0] * 500) / 500) + ',' + (Math.round(p[1] * 500) / 500) + ',' + (Math.round(p[2] * 500) / 500); }
+      faces.forEach(function (f) {
+        f.p.forEach(function (p) {
+          var k = key(p), a2 = acc[k] || (acc[k] = [0, 0, 0]);
+          a2[0] += f.n[0]; a2[1] += f.n[1]; a2[2] += f.n[2];
+        });
+      });
+      function norm(a2) { var d = Math.hypot(a2[0], a2[1], a2[2]) || 1; return [a2[0] / d, a2[1] / d, a2[2] / d]; }
+      faces.forEach(function (f) {
+        var n0 = norm(acc[key(f.p[0])]), n1 = norm(acc[key(f.p[1])]), n2 = norm(acc[key(f.p[2])]), n3 = norm(acc[key(f.p[3])]);
+        emit(f.p[0], n0, f.c, f.ln, 0); emit(f.p[1], n1, f.c, f.ln, 0); emit(f.p[2], n2, f.c, f.ln, 0);
+        emit(f.p[0], n0, f.c, f.ln, 0); emit(f.p[2], n2, f.c, f.ln, 0); emit(f.p[3], n3, f.c, f.ln, 0);
+      });
+    })();
+    /* ---------- 端盖（车头：挡风 / 遮罩 / 车灯；车尾：深窗 + 红灯；中间端：暗盖） ---------- */
+    (function () {
+      var u = isHead ? 1 : (isTail ? 0 : 1);
+      var sgn = isHead ? 1 : -1;
+      var c = at(u, 0);
+      var ctr = [c[0], 0, H * 0.5 * prof(u)];
+      var GLS = [0.12, 0.14, 0.18], MSK = [1, 1, 1], WHT = isTram ? [1, 1, 1] : [0.96, 0.97, 0.98];
+      var i2, p0, p1, rz, col, ln2;
+      for (i2 = 0; i2 < ring.length - 1; i2++) {
+        p0 = at(u, i2); p1 = at(u, i2 + 1);
+        rz = (ring[i2][1] + ring[i2 + 1][1]) / 2;
+        if (isHead) { col = rz > 0.55 ? GLS : (rz > 0.30 ? MSK : WHT); ln2 = (col === MSK) ? 1 : 0; }
+        else { col = rz > 0.50 ? GLS : (isTail && rz > 0.62 ? [0.55, 0.14, 0.12] : [0.16, 0.18, 0.22]); ln2 = 0; }
+        var n = nrm3(ctr, p0, p1);
+        if (n[0] * sgn < 0) { n = [-n[0], -n[1], -n[2]]; var tp = p0; p0 = p1; p1 = tp; }
+        emit(ctr, n, col, ln2, 0); emit(p0, n, col, ln2, 0); emit(p1, n, col, ln2, 0);
+      }
+      if (isHead) {
+        var hw = HWv * 0.58, xf = (0.5 * L - L * 0.085 * 0.09 * 1) - 0.02;
+        [[-0.52, 0.34], [0.52, 0.34]].forEach(function (hl) {
+          quadFlat({ p: [[xf, hl[0] * hw - 0.16 * HWv, hl[1] * H], [xf, hl[0] * hw + 0.16 * HWv, hl[1] * H],
+            [xf, hl[0] * hw + 0.16 * HWv, hl[1] * H + 0.045 * H], [xf, hl[0] * hw - 0.16 * HWv, hl[1] * H + 0.045 * H]],
+            n: [1, 0, 0] }, [1.0, 0.96, 0.78], 0, 0);
+        });
+      }
+      if (isTail) {
+        var hw2 = HWv * 0.84, xt = (-0.5 * L + L * 0.04 * 0.6) - 0.02;
+        [[-0.5, 0.58], [0.5, 0.58]].forEach(function (hl) {
+          quadFlat({ p: [[xt, hl[0] * hw2, hl[1] * H], [xt, hl[0] * hw2 + 0.14 * HWv, hl[1] * H],
+            [xt, hl[0] * hw2 + 0.14 * HWv, hl[1] * H + 0.05 * H], [xt, hl[0] * hw2, hl[1] * H + 0.05 * H]],
+            n: [-1, 0, 0] }, [0.86, 0.18, 0.15], 0, 0);
+        });
+      }
+    })();
+    /* ---------- 侧窗 / 门洞 / 门叶 ---------- */
+    (function () {
+      var wFrom = isHead ? 0.30 : 0.10, wTo = isTail ? 0.78 : 0.90;
+      var doorUs = isHead ? [0.42, 0.76] : [0.26, 0.72];
+      var dh = 0.075, slide = dh * L;
+      var yWin = HWv * (1 - 0.045 * (0.56 / 0.62) * (0.56 / 0.62)) + 0.06;
+      var zWin0 = 0.46 * H, zWin1 = 0.66 * H;
+      var GLS = [0.12, 0.14, 0.18], GLS2 = [0.30, 0.36, 0.44];
+      var segs = [[wFrom, wTo]];
+      doorUs.forEach(function (cu) {
+        var lo = cu - dh, hi = cu + dh, out = [];
+        segs.forEach(function (sg) {
+          if (hi <= sg[0] || lo >= sg[1]) { out.push(sg); return; }
+          if (lo > sg[0]) out.push([sg[0], lo]);
+          if (hi < sg[1]) out.push([hi, sg[1]]);
+        });
+        segs = out;
+      });
+      segs.forEach(function (sg) {
+        if (sg[1] - sg[0] < 0.03) return;
+        var x0 = (sg[0] - 0.5) * L, x1 = (sg[1] - 0.5) * L;
+        [1, -1].forEach(function (side) {
+          var y = yWin * side;
+          quadFlat({ p: [[x0, y, zWin0], [x1, y, zWin0], [x1, y, zWin1], [x0, y, zWin1]], n: [0, side, 0] }, GLS, 0, 0);
+          quadFlat({ p: [[x0, y + 0.012 * side, zWin1 - 0.055 * H], [x1, y + 0.012 * side, zWin1 - 0.055 * H],
+            [x1, y + 0.012 * side, zWin1], [x0, y + 0.012 * side, zWin1]], n: [0, side, 0] }, GLS2, 0, 0);
+        });
+      });
+      doorUs.forEach(function (cu) {
+        var xl = (cu - dh - 0.5) * L, xr = (cu + dh - 0.5) * L;
+        [1, -1].forEach(function (side) {
+          quadFlat({ p: [[xl, yWin * side - 0.03 * side, 0.05 * H], [xr, yWin * side - 0.03 * side, 0.05 * H],
+            [xr, yWin * side - 0.03 * side, 0.64 * H], [xl, yWin * side - 0.03 * side, 0.64 * H]],
+            n: [0, side, 0] }, [0.08, 0.09, 0.12], 0, 0);
+          [[xl, 0], [xr, 0]].forEach(function (ee) {
+            var sgn = ee[1] === 0 ? (ee[0] === xl ? -1 : 1) : 1;
+            var xm = (cu + sgn * dh / 2 - 0.5) * L;
+            var yL = yWin * side + 0.07 * side;
+            var dr = sgn * slide;
+            quadFlat({ p: [[xm - dh * L / 2, yL, 0.06 * H], [xm + dh * L / 2, yL, 0.06 * H],
+              [xm + dh * L / 2, yL, 0.64 * H], [xm - dh * L / 2, yL, 0.64 * H]], n: [0, side, 0] },
+              isTram ? [1, 1, 1] : [0.96, 0.97, 0.98], isTram ? 1 : 0, dr);
+            quadFlat({ p: [[xm - dh * L * 0.32, yL + 0.012 * side, 0.33 * H], [xm + dh * L * 0.32, yL + 0.012 * side, 0.33 * H],
+              [xm + dh * L * 0.32, yL + 0.012 * side, 0.60 * H], [xm - dh * L * 0.32, yL + 0.012 * side, 0.60 * H]],
+              n: [0, side, 0] }, [0.16, 0.19, 0.24], 0, dr);
+          });
+        });
+      });
+    })();
+    /* ---------- 车顶设备：两台空调 +（role 3）受电弓 ---------- */
+    (function () {
+      var ACc = [0.83, 0.85, 0.88], DKe = [0.30, 0.32, 0.36];
+      [-0.22, 0.22].forEach(function (fx) {
+        box(fx * L, 0, H + 0.055 * H, L * 0.16, HWv * 0.52, 0.055 * H, ACc, 0);
+      });
+      if (role === 3) {
+        var zr = H + 0.11 * H;
+        box(0, 0, zr, L * 0.10, HWv * 0.28, 0.02 * H, DKe, 0);
+        slantBar(-L * 0.06, zr + 0.02 * H, L * 0.03, zr + 0.16 * H, 0.06 * HWv, 0.012 * H, DKe);
+        slantBar(L * 0.03, zr + 0.16 * H, -L * 0.05, zr + 0.30 * H, 0.06 * HWv, 0.012 * H, DKe);
+        box(-L * 0.01, 0, zr + 0.30 * H, L * 0.09, 0.30 * HWv, 0.012 * H, DKe, 0);
+      }
+      if (!isHead && !isTail && !isTram) box(0, 0, H + 0.14 * H, L * 0.40, 0.10 * HWv, 0.010 * H, [0.72, 0.74, 0.78], 0);
+    })();
+    var data = new Float32Array(vp.length / 3 * 11);
+    for (var v = 0, w = 0; v < vp.length / 3; v++) {
+      data[w++] = vp[v * 3]; data[w++] = vp[v * 3 + 1]; data[w++] = vp[v * 3 + 2];
+      data[w++] = vn[v * 3]; data[w++] = vn[v * 3 + 1]; data[w++] = vn[v * 3 + 2];
+      data[w++] = vc[v * 3]; data[w++] = vc[v * 3 + 1]; data[w++] = vc[v * 3 + 2];
+      data[w++] = vl[v]; data[w++] = vd[v];
     }
     return data;
   }
   function t3dFlatQuad() {
     var p = [[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, -1, 0], [1, 1, 0], [-1, 1, 0]];
-    var d = new Float32Array(p.length * 10);
+    var d = new Float32Array(p.length * 11);
     for (var i = 0; i < p.length; i++) {
-      var w = i * 10;
+      var w = i * 11;
       d[w] = p[i][0]; d[w + 1] = p[i][1]; d[w + 2] = p[i][2];
       d[w + 3] = 0; d[w + 4] = 0; d[w + 5] = 1;
-      d[w + 6] = 1; d[w + 7] = 1; d[w + 8] = 1; d[w + 9] = 0;
+      d[w + 6] = 1; d[w + 7] = 1; d[w + 8] = 1; d[w + 9] = 0; d[w + 10] = 0;
     }
     return d;
   }
   function t3dFlatDisc(seg) {
     var d = [], prevA = 0, i, a;
-    function pushv(x, y) { d.push(x, y, 0, 0, 0, 1, 1, 1, 1, 0); }
+    function pushv(x, y) { d.push(x, y, 0, 0, 0, 1, 1, 1, 1, 0, 0); }
     for (i = 1; i <= seg; i++) {
       a = i / seg * Math.PI * 2;
       pushv(0, 0); pushv(Math.cos(prevA), Math.sin(prevA)); pushv(Math.cos(a), Math.sin(a));
@@ -1230,15 +1382,16 @@
     var gl = T3D.gl, buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    return { buf: buf, verts: data.length / 10 };
+    return { buf: buf, verts: data.length / 11 };
   }
   function t3dBind(mesh) {
     var gl = T3D.gl, lo = T3D.locs;
     gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buf);
-    gl.enableVertexAttribArray(lo.aPos); gl.vertexAttribPointer(lo.aPos, 3, gl.FLOAT, false, 40, 0);
-    gl.enableVertexAttribArray(lo.aNor); gl.vertexAttribPointer(lo.aNor, 3, gl.FLOAT, false, 40, 12);
-    gl.enableVertexAttribArray(lo.aCol); gl.vertexAttribPointer(lo.aCol, 3, gl.FLOAT, false, 40, 24);
-    gl.enableVertexAttribArray(lo.aLine); gl.vertexAttribPointer(lo.aLine, 1, gl.FLOAT, false, 40, 36);
+    gl.enableVertexAttribArray(lo.aPos); gl.vertexAttribPointer(lo.aPos, 3, gl.FLOAT, false, 44, 0);
+    gl.enableVertexAttribArray(lo.aNor); gl.vertexAttribPointer(lo.aNor, 3, gl.FLOAT, false, 44, 12);
+    gl.enableVertexAttribArray(lo.aCol); gl.vertexAttribPointer(lo.aCol, 3, gl.FLOAT, false, 44, 24);
+    gl.enableVertexAttribArray(lo.aLine); gl.vertexAttribPointer(lo.aLine, 1, gl.FLOAT, false, 44, 36);
+    gl.enableVertexAttribArray(lo.aDoor); gl.vertexAttribPointer(lo.aDoor, 1, gl.FLOAT, false, 44, 40);
   }
   /* 局部(沿向, 侧向, 高度) → 世界 → 屏幕(k, t) → NDC（y 翻转）；高度抬升 = 世界 y 减去 z·lift */
   function t3dMat(px, py, ang, ax, ay, liftOn) {
@@ -1258,13 +1411,14 @@
     var c = Math.cos(-ang), s = Math.sin(-ang);
     return [T3D_LIGHT[0] * c - T3D_LIGHT[1] * s, T3D_LIGHT[0] * s + T3D_LIGHT[1] * c, T3D_LIGHT[2]];
   }
-  function t3dDraw(mesh, m, line, tint, mode, light) {
+  function t3dDraw(mesh, m, line, tint, mode, light, door) {
     var gl = T3D.gl, lo = T3D.locs;
     gl.uniformMatrix4fv(lo.uM, false, m);
     gl.uniform3fv(lo.uLine, line);
     gl.uniform4fv(lo.uTint, tint);
     gl.uniform1f(lo.uMode, mode);
     gl.uniform3fv(lo.uLight, light);
+    gl.uniform1f(lo.uDoor, door || 0);
     t3dBind(mesh);
     gl.drawArrays(gl.TRIANGLES, 0, mesh.verts);
   }
@@ -1338,17 +1492,17 @@
         var p2 = pointAt(o.rt, s2);
         var aa = pointAt(o.rt, s2 - o.tr.dir * 0.6), bb = pointAt(o.rt, s2 + o.tr.dir * 0.6);
         cars.push({ px: p2.x, py: p2.y, ang: Math.atan2(bb.y - aa.y, bb.x - aa.x),
-          role: c2 === 0 ? 0 : (c2 === o.spec.cars - 1 ? 2 : 1),
-          kind: o.spec === CFG.tram ? 'tram' : 'metro', color: o.rt.color });
+          role: c2 === 0 ? 0 : (c2 === o.spec.cars - 1 ? 2 : ((o.spec !== CFG.tram && (c2 === 1 || c2 === 5)) ? 3 : 1)),
+          kind: o.spec === CFG.tram ? 'tram' : 'metro', color: o.rt.color, door: o.tr.door || 0 });
       }
     }
     cars.sort(function (u, v2) { return u.py - v2.py; });
     var inst = 0;
     for (i = 0; i < cars.length; i++) {
       var it = cars[i];
-      var mesh = T3D.meshes[it.kind + '|' + it.role];
+      var mesh = T3D.meshes[it.kind + '|' + it.role] || T3D.meshes[it.kind + '|1'];
       if (!mesh) continue;
-      t3dDraw(mesh, t3dMat(it.px, it.py, it.ang, 1, 1, true), t3dHex(it.color), [0, 0, 0, 1], 0, t3dLightLocal(it.ang));
+      t3dDraw(mesh, t3dMat(it.px, it.py, it.ang, 1, 1, true), t3dHex(it.color), [0, 0, 0, 1], 0, t3dLightLocal(it.ang), it.door);
       inst++;
     }
     T3D.frames++;
@@ -1374,12 +1528,13 @@
     T3D.locs = {
       aPos: gl.getAttribLocation(prog, 'aPos'), aNor: gl.getAttribLocation(prog, 'aNor'),
       aCol: gl.getAttribLocation(prog, 'aCol'), aLine: gl.getAttribLocation(prog, 'aLine'),
+      aDoor: gl.getAttribLocation(prog, 'aDoor'),
       uM: gl.getUniformLocation(prog, 'uM'), uLight: gl.getUniformLocation(prog, 'uLight'),
       uLine: gl.getUniformLocation(prog, 'uLine'), uTint: gl.getUniformLocation(prog, 'uTint'),
-      uMode: gl.getUniformLocation(prog, 'uMode')
+      uMode: gl.getUniformLocation(prog, 'uMode'), uDoor: gl.getUniformLocation(prog, 'uDoor')
     };
     T3D.canvas = canvas; T3D.gl = gl;
-    var combos = [['metro', 0], ['metro', 1], ['metro', 2], ['tram', 0], ['tram', 1], ['tram', 2]];
+    var combos = [['metro', 0], ['metro', 1], ['metro', 2], ['metro', 3], ['tram', 0], ['tram', 1], ['tram', 2]];
     for (var i = 0; i < combos.length; i++) {
       var up = t3dUpload(t3dCarMesh(combos[i][0] === 'tram', combos[i][1]));
       T3D.meshes[combos[i][0] + '|' + combos[i][1]] = up;
@@ -5027,11 +5182,11 @@
       return T3D.instances === exp && exp > 0 && svgHidden && avatarVisible && offVisible;
     })());
 
-    chk('列车 3D 网格：两种品类 × 三种车厢角色齐备，顶点量同一量级', (function () {
-      var need = ['metro|0', 'metro|1', 'metro|2', 'tram|0', 'tram|1', 'tram|2'];
-      var ok = need.every(function (k) { return !!T3D.meshes[k] && T3D.meshes[k].verts >= 30; });
+    chk('列车 3D 网格：两种品类 × 三种车厢角色（+受电弓车）齐备，顶点量同一量级', (function () {
+      var need = ['metro|0', 'metro|1', 'metro|2', 'metro|3', 'tram|0', 'tram|1', 'tram|2'];
+      var ok = need.every(function (k) { return !!T3D.meshes[k] && T3D.meshes[k].verts >= 120; });
       chk.__t3dmesh = need.join(' ') + ' · 顶点合计=' + T3D.verts;
-      return ok && T3D.verts < 12000;
+      return ok && T3D.verts < 60000;
     })());
 
     /* 自创线路（data-custom.js 手写并入，不经过生成器）：蛋仔专线 + 头像列车 */
