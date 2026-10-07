@@ -983,3 +983,9 @@ body {
   #world .train-halo path, #world .next-ring { animation: none; }
   .tabpane:not([hidden]) { animation: none; }
 }
+
+/* ===== 列车 3D 层（WebGL，train-3d 分支；app.js 的 initTrains3D/drawTrains3D） =====
+   开启时（#stage.t3d）：隐藏 SVG 车厢画法（transform 照常更新——回退显示与自检都靠它），
+   头像列车（蛋仔专线）保留 2D 可见；3D 画布在地图之上、贴片（z-36）与气泡之下。 */
+#trains3d { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
+#stage.t3d #trains .train:not(.keep3d) { opacity: 0; }

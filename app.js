@@ -1109,6 +1109,290 @@
   }
 
   /* 逐列车绘制（贴在各自线路上） */
+  /* ==================================== 列车 3D 层（WebGL 1，零依赖手写；?t3d=0 可关） =====
+     分工：SVG 仍负责几何缓存、命中与自检基准（transform 照常更新，作为回退显示）；
+     本层每帧按同一套 route 参数取每节车的位置/朝向，用「军械投影」（俯视 + 高度向上抬）
+     画带光照的 3D 车厢，叠在地图之上、贴片之下。只画地铁/电车；蛋仔专线的头像列车保留 2D。
+     WebGL 不可用（或 ?t3d=0）时整层不动，自动回落 SVG。 */
+  var CFG3D = {
+    height: 4.6,               // 车体高（地图单位；与车长一样是示意夸张）
+    lift: 0.92,                // 高度→屏幕抬升系数（军械投影竖直分量）
+    winLo: 0.30, winHi: 0.68,  // 侧面三段色带：裙边 / 玻璃 / 车身
+    dprMax: 2,
+    cull: 300                  // 屏外剔除余量（世界单位）
+  };
+  var T3D = { enabled: false, ready: false, reason: 'init', canvas: null, gl: null,
+    prog: null, locs: null, frames: 0, instances: 0, verts: 0, meshes: {}, quad: null, disc: null };
+  var T3D_VS = 'attribute vec3 aPos;attribute vec3 aNor;attribute vec3 aCol;attribute float aLine;' +
+    'uniform mat4 uM;uniform vec3 uLight;varying vec3 vCol;varying float vLine;varying float vLit;' +
+    'void main(){gl_Position=uM*vec4(aPos,1.0);vCol=aCol;vLine=aLine;' +
+    'vLit=0.52+0.48*max(0.0,dot(aNor,uLight));}';
+  var T3D_FS = 'precision mediump float;uniform vec3 uLine;uniform vec4 uTint;uniform float uMode;' +
+    'varying vec3 vCol;varying float vLine;varying float vLit;' +
+    'void main(){float a=uTint.a;vec3 c;if(uMode>0.5){c=uTint.rgb;}' +
+    'else{c=mix(vCol,uLine,vLine)*vLit;}gl_FragColor=vec4(c,a);}';
+  var T3D_LIGHT = [-0.45, -0.32, 0.83];
+
+  function t3dHex(c) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(c || '');
+    if (!m) return [0.5, 0.5, 0.5];
+    var v = parseInt(m[1], 16);
+    return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+  }
+
+  /* 一节车网格：沿长度放样（若干站 × 10 点截面环）+ 两端盖；硬边平法线。
+     局部坐标：+x 车头方向，y 侧向，z 高度。顶点 10 float = 位置/法线/颜色/useLine。 */
+  function t3dCarMesh(isTram, role) {
+    var spec = isTram ? CFG.tram : CFG;
+    var L = spec.carLen, HWv = spec.carHW, H = CFG3D.height;
+    var us = role === 0 ? [0, 0.5, 0.76, 0.88, 1] : (role === 2 ? [0, 0.78, 0.9, 1] : [0, 1]);
+    function prof(u) {
+      if (role === 0 && u > 0.78) { var t = (u - 0.78) / 0.22; return 0.42 + 0.58 * (t * t * (3 - 2 * t)); }
+      if (role === 2 && u > 0.86) { var t2 = (u - 0.86) / 0.14; return 1 - 0.30 * (t2 * t2 * (3 - 2 * t2)); }
+      return 1;
+    }
+    var ring = [[1, 0], [1, CFG3D.winLo], [1, CFG3D.winHi], [0.86, 1], [0.26, 1],
+      [-0.26, 1], [-0.86, 1], [-1, CFG3D.winHi], [-1, CFG3D.winLo], [-1, 0]];
+    var edge = ['skirt', 'glass', 'body', 'roof', 'stripe', 'roof', 'body', 'glass', 'skirt'];
+    var PAL = {
+      skirt: { c: [0.24, 0.26, 0.30], line: 0 }, glass: { c: [0.13, 0.15, 0.19], line: 0 },
+      body: isTram ? { c: [1, 1, 1], line: 1 } : { c: [0.95, 0.96, 0.97], line: 0 },
+      roof: isTram ? { c: [1, 1, 1], line: 1 } : { c: [0.87, 0.89, 0.92], line: 0 },
+      stripe: { c: [1, 1, 1], line: 1 }, face: { c: [0.15, 0.17, 0.22], line: 0 }
+    };
+    var pos = [], nor = [], col = [], lin = [];
+    function at(u, ri) {
+      var s = prof(u);
+      return [(u - 0.5) * L, ring[ri][0] * HWv * s, ring[ri][1] * H * (0.55 + 0.45 * s)];
+    }
+    function push(p, n, c, ln) {
+      var k;
+      for (k = 0; k < 3; k++) pos.push(p[k]);
+      for (k = 0; k < 3; k++) nor.push(n[k]);
+      col.push(c[0], c[1], c[2]); lin.push(ln);
+    }
+    function tri(p0, p1, p2, c, ln) {
+      var ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+      var vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+      var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      var dd = Math.hypot(nx, ny, nz) || 1;
+      var n = [nx / dd, ny / dd, nz / dd];
+      /* 外法线修正：相对截面中心（0, 0.5H），反了就翻法线并换绕向 */
+      var mx = (p0[0] + p1[0] + p2[0]) / 3, my = (p0[1] + p1[1] + p2[1]) / 3, mz = (p0[2] + p1[2] + p2[2]) / 3 - H * 0.5;
+      if (n[0] * mx + n[1] * my + n[2] * mz < 0) { n = [-n[0], -n[1], -n[2]]; var tp = p1; p1 = p2; p2 = tp; }
+      push(p0, n, c, ln); push(p1, n, c, ln); push(p2, n, c, ln);
+    }
+    var si, e2;
+    for (si = 0; si < us.length - 1; si++) {
+      for (e2 = 0; e2 < edge.length; e2++) {
+        var pal = PAL[edge[e2]];
+        var q0 = at(us[si], e2), q1 = at(us[si], e2 + 1), q3 = at(us[si + 1], e2), q2 = at(us[si + 1], e2 + 1);
+        tri(q0, q1, q2, pal.c, pal.line);
+        tri(q0, q2, q3, pal.c, pal.line);
+      }
+    }
+    for (e2 = 0; e2 < ring.length - 1; e2++) {           // 两端盖：避免看穿车壳
+      var a0 = at(0, e2), a1 = at(0, e2 + 1), b0 = at(1, e2), b1 = at(1, e2 + 1);
+      tri([a0[0], 0, H * 0.5], a0, a1, PAL.face.c, 0);
+      tri([b0[0], 0, H * (role === 2 ? 0.38 : 0.5)], b1, b0, PAL.face.c, 0);
+    }
+    var data = new Float32Array((pos.length / 3) * 10);
+    for (var v = 0, w = 0; v < pos.length / 3; v++) {
+      data[w++] = pos[v * 3]; data[w++] = pos[v * 3 + 1]; data[w++] = pos[v * 3 + 2];
+      data[w++] = nor[v * 3]; data[w++] = nor[v * 3 + 1]; data[w++] = nor[v * 3 + 2];
+      data[w++] = col[v * 3]; data[w++] = col[v * 3 + 1]; data[w++] = col[v * 3 + 2];
+      data[w++] = lin[v];
+    }
+    return data;
+  }
+  function t3dFlatQuad() {
+    var p = [[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, -1, 0], [1, 1, 0], [-1, 1, 0]];
+    var d = new Float32Array(p.length * 10);
+    for (var i = 0; i < p.length; i++) {
+      var w = i * 10;
+      d[w] = p[i][0]; d[w + 1] = p[i][1]; d[w + 2] = p[i][2];
+      d[w + 3] = 0; d[w + 4] = 0; d[w + 5] = 1;
+      d[w + 6] = 1; d[w + 7] = 1; d[w + 8] = 1; d[w + 9] = 0;
+    }
+    return d;
+  }
+  function t3dFlatDisc(seg) {
+    var d = [], prevA = 0, i, a;
+    function pushv(x, y) { d.push(x, y, 0, 0, 0, 1, 1, 1, 1, 0); }
+    for (i = 1; i <= seg; i++) {
+      a = i / seg * Math.PI * 2;
+      pushv(0, 0); pushv(Math.cos(prevA), Math.sin(prevA)); pushv(Math.cos(a), Math.sin(a));
+      prevA = a;
+    }
+    return new Float32Array(d);
+  }
+  function t3dUpload(data) {
+    var gl = T3D.gl, buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    return { buf: buf, verts: data.length / 10 };
+  }
+  function t3dBind(mesh) {
+    var gl = T3D.gl, lo = T3D.locs;
+    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buf);
+    gl.enableVertexAttribArray(lo.aPos); gl.vertexAttribPointer(lo.aPos, 3, gl.FLOAT, false, 40, 0);
+    gl.enableVertexAttribArray(lo.aNor); gl.vertexAttribPointer(lo.aNor, 3, gl.FLOAT, false, 40, 12);
+    gl.enableVertexAttribArray(lo.aCol); gl.vertexAttribPointer(lo.aCol, 3, gl.FLOAT, false, 40, 24);
+    gl.enableVertexAttribArray(lo.aLine); gl.vertexAttribPointer(lo.aLine, 1, gl.FLOAT, false, 40, 36);
+  }
+  /* 局部(沿向, 侧向, 高度) → 世界 → 屏幕(k, t) → NDC（y 翻转）；高度抬升 = 世界 y 减去 z·lift */
+  function t3dMat(px, py, ang, ax, ay, liftOn) {
+    var k = view.k, sx = 2 / stage.w, sy = 2 / stage.h;
+    var c = Math.cos(ang), s = Math.sin(ang);
+    var kx = k * ax, ky = k * ay;
+    var m = new Float32Array(16);
+    m[0] = c * kx * sx; m[1] = -s * kx * sy; m[2] = 0; m[3] = 0;
+    m[4] = -s * ky * sx; m[5] = -c * ky * sy; m[6] = 0; m[7] = 0;
+    m[8] = 0; m[9] = (liftOn ? CFG3D.lift : 0) * k * sy; m[10] = 0; m[11] = 0;
+    m[12] = (view.tx + px * k) * sx - 1;
+    m[13] = 1 - (view.ty + py * k) * sy;
+    m[14] = 0; m[15] = 1;
+    return m;
+  }
+  function t3dLightLocal(ang) {
+    var c = Math.cos(-ang), s = Math.sin(-ang);
+    return [T3D_LIGHT[0] * c - T3D_LIGHT[1] * s, T3D_LIGHT[0] * s + T3D_LIGHT[1] * c, T3D_LIGHT[2]];
+  }
+  function t3dDraw(mesh, m, line, tint, mode, light) {
+    var gl = T3D.gl, lo = T3D.locs;
+    gl.uniformMatrix4fv(lo.uM, false, m);
+    gl.uniform3fv(lo.uLine, line);
+    gl.uniform4fv(lo.uTint, tint);
+    gl.uniform1f(lo.uMode, mode);
+    gl.uniform3fv(lo.uLight, light);
+    t3dBind(mesh);
+    gl.drawArrays(gl.TRIANGLES, 0, mesh.verts);
+  }
+  /* 本帧要画哪些车（与绘制完全同一套谓词；自检也用它算期望值） */
+  function t3dVisible() {
+    var out = [];
+    for (var ti = 0; ti < trains.length; ti++) {
+      var tg = trainGroups[ti];
+      if (!tg || tg.avatar) continue;                 // 头像列车保留 2D
+      var tr = trains[ti], rt = ROUTES[tr.routeKey];
+      if (!lineVisible(rt.lineKey)) continue;
+      var hp = pointAt(rt, kmToMap(rt, tr.posKm));
+      var sx = hp.x * view.k + view.tx, sy = hp.y * view.k + view.ty;
+      if (sx < -CFG3D.cull || sy < -CFG3D.cull || sx > stage.w + CFG3D.cull || sy > stage.h + CFG3D.cull) continue;
+      out.push({ ti: ti, tr: tr, rt: rt, spec: specOf(tr) });
+    }
+    return out;
+  }
+  function setTrains3D(on) {
+    on = !!on && T3D.ready;
+    T3D.enabled = on;
+    var st = $('stage');
+    if (st) st.classList.toggle('t3d', on);
+    if (on) drawTrains3D();
+  }
+  function drawTrains3D() {
+    if (!T3D.enabled || !T3D.ready || !ready) return;
+    var gl = T3D.gl, cv = T3D.canvas;
+    var dpr = Math.min(window.devicePixelRatio || 1, CFG3D.dprMax);
+    var W = Math.max(2, Math.round(stage.w * dpr)), Hh = Math.max(2, Math.round(stage.h * dpr));
+    if (cv.width !== W || cv.height !== Hh) { cv.width = W; cv.height = Hh; cv.style.width = stage.w + 'px'; cv.style.height = stage.h + 'px'; }
+    gl.viewport(0, 0, W, Hh);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(T3D.prog);
+    var vis = t3dVisible(), i, o, hc;
+    var nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    var pulse = 0.10 + 0.05 * Math.sin(nowMs / 450);
+    /* 光晕（当前控制列车）：逐车厢圆盘拼成一条光带，透明度脉动 */
+    for (i = 0; i < vis.length; i++) {
+      o = vis[i];
+      if (o.ti !== activeIdx) continue;
+      var lc = t3dHex(o.rt.color), head0 = kmToMap(o.rt, o.tr.posKm);
+      for (hc = 0; hc < o.spec.cars; hc++) {
+        var sh = head0 - o.tr.dir * (hc * (o.spec.carLen + o.spec.carGap) + o.spec.carLen / 2);
+        var ph = pointAt(o.rt, sh);
+        t3dDraw(T3D.disc, t3dMat(ph.x, ph.y, 0, o.spec.carHW + 7, o.spec.carHW + 7, false),
+          lc, [lc[0], lc[1], lc[2], pulse], 1, [0, 0, 1]);
+      }
+    }
+    /* 每列车一块软阴影（沿车向的矩形，两层叠加；与 2D 的 translate(2.2,3.2) 同向） */
+    for (i = 0; i < vis.length; i++) {
+      o = vis[i];
+      var midS = kmToMap(o.rt, o.tr.posKm) - o.tr.dir * totalLen(o.spec) / 2;
+      var pm = pointAt(o.rt, midS);
+      var pa = pointAt(o.rt, midS - 0.8), pb = pointAt(o.rt, midS + 0.8);
+      var angM = Math.atan2(pb.y - pa.y, pb.x - pa.x);
+      var q1 = totalLen(o.spec) / 2 + 4, q2 = o.spec.carHW + 4;
+      t3dDraw(T3D.quad, t3dMat(pm.x + 2.4, pm.y + 3.4, angM, q1, q2, false), [0, 0, 0], [0.04, 0.06, 0.09, 0.14], 1, [0, 0, 1]);
+      t3dDraw(T3D.quad, t3dMat(pm.x + 3.2, pm.y + 4.4, angM, q1 * 1.06, q2 * 1.25, false), [0, 0, 0], [0.04, 0.06, 0.09, 0.07], 1, [0, 0, 1]);
+    }
+    /* 车厢：按屏上 y（世界 y）排序，南边的压北边的（军械投影的正确遮挡顺序） */
+    var cars = [];
+    for (i = 0; i < vis.length; i++) {
+      o = vis[i];
+      var head = kmToMap(o.rt, o.tr.posKm);
+      for (var c2 = 0; c2 < o.spec.cars; c2++) {
+        var s2 = head - o.tr.dir * (c2 * (o.spec.carLen + o.spec.carGap) + o.spec.carLen / 2);
+        var p2 = pointAt(o.rt, s2);
+        var aa = pointAt(o.rt, s2 - o.tr.dir * 0.6), bb = pointAt(o.rt, s2 + o.tr.dir * 0.6);
+        cars.push({ px: p2.x, py: p2.y, ang: Math.atan2(bb.y - aa.y, bb.x - aa.x),
+          role: c2 === 0 ? 0 : (c2 === o.spec.cars - 1 ? 2 : 1),
+          kind: o.spec === CFG.tram ? 'tram' : 'metro', color: o.rt.color });
+      }
+    }
+    cars.sort(function (u, v2) { return u.py - v2.py; });
+    var inst = 0;
+    for (i = 0; i < cars.length; i++) {
+      var it = cars[i];
+      var mesh = T3D.meshes[it.kind + '|' + it.role];
+      if (!mesh) continue;
+      t3dDraw(mesh, t3dMat(it.px, it.py, it.ang, 1, 1, true), t3dHex(it.color), [0, 0, 0, 1], 0, t3dLightLocal(it.ang));
+      inst++;
+    }
+    T3D.frames++;
+    T3D.instances = inst;
+  }
+  function initTrains3D() {
+    var m = /[?&]t3d=(0|1)/.exec(location.search);
+    if (m && m[1] === '0') { T3D.reason = 'url-off'; return; }
+    var canvas = document.createElement('canvas');
+    canvas.id = 'trains3d';
+    var gl = null;
+    try { gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: true }) || canvas.getContext('experimental-webgl'); } catch (e0) { gl = null; }
+    if (!gl) { T3D.reason = 'no-webgl'; return; }
+    var svgEl = document.querySelector('#stage svg');
+    if (!svgEl || !svgEl.parentNode) { T3D.reason = 'no-svg'; return; }
+    svgEl.parentNode.insertBefore(canvas, svgEl.nextSibling);
+    var prog = gl.createProgram(), vs = gl.createShader(gl.VERTEX_SHADER), fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(vs, T3D_VS); gl.compileShader(vs);
+    gl.shaderSource(fs, T3D_FS); gl.compileShader(fs);
+    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { T3D.reason = 'link'; return; }
+    T3D.prog = prog;
+    T3D.locs = {
+      aPos: gl.getAttribLocation(prog, 'aPos'), aNor: gl.getAttribLocation(prog, 'aNor'),
+      aCol: gl.getAttribLocation(prog, 'aCol'), aLine: gl.getAttribLocation(prog, 'aLine'),
+      uM: gl.getUniformLocation(prog, 'uM'), uLight: gl.getUniformLocation(prog, 'uLight'),
+      uLine: gl.getUniformLocation(prog, 'uLine'), uTint: gl.getUniformLocation(prog, 'uTint'),
+      uMode: gl.getUniformLocation(prog, 'uMode')
+    };
+    T3D.canvas = canvas; T3D.gl = gl;
+    var combos = [['metro', 0], ['metro', 1], ['metro', 2], ['tram', 0], ['tram', 1], ['tram', 2]];
+    for (var i = 0; i < combos.length; i++) {
+      var up = t3dUpload(t3dCarMesh(combos[i][0] === 'tram', combos[i][1]));
+      T3D.meshes[combos[i][0] + '|' + combos[i][1]] = up;
+      T3D.verts += up.verts;
+    }
+    T3D.quad = t3dUpload(t3dFlatQuad());
+    T3D.disc = t3dUpload(t3dFlatDisc(24));
+    trainGroups.forEach(function (tg) { if (tg && tg.avatar) tg.g.classList.add('keep3d'); });
+    T3D.ready = true;
+    T3D.reason = 'ok';
+    setTrains3D(true);
+  }
+
   function renderTrains() {
     var total = CFG.cars;
     /* “没动就不重画”阀值：屏幕位移 < 0.25px 就不值得重算几何+写 DOM
@@ -3643,6 +3927,7 @@
     buildLabels();
     initTrains();
     buildTrains();
+    initTrains3D();
     buildNextMarks();
     buildStationList();
     resetAllTrains();
@@ -3705,6 +3990,7 @@
         renderTrains();
       }
       interpolateTrains();          // 位置每帧跟（几何仍按需重画）
+      drawTrains3D();               // 列车 3D 层（WebGL；不可用或被关时内部直接返回）
       updateNextMarks(dtRaw);
       updateTrainPills();
       positionBubbles();
@@ -4722,6 +5008,31 @@
       trains.every(function (tr, i) { return trainGroups[i].els.length === specOf(tr).cars; }),
       Object.keys(stationEls).length + '/' + labelEls.length + '/' + trainGroups.length + '×' +
         (trainGroups[0] ? trainGroups[0].els.length : 0));
+
+    /* ---------------- 列车 3D 层（WebGL；train-3d 分支） ---------------- */
+    chk('列车 3D 层：WebGL 就绪、每节车厢都有实例、SVG 层按开关显现/隐去', (function () {
+      if (!T3D.ready) return false;
+      drawTrains3D();
+      var exp = 0, vis = t3dVisible();
+      vis.forEach(function (o) { exp += o.spec.cars; });
+      var svgHidden = getComputedStyle(trainGroups[0].g).opacity === '0';
+      var av = null;
+      trainGroups.forEach(function (tg) { if (tg.avatar) av = tg; });
+      var avatarVisible = av ? getComputedStyle(av.g).opacity !== '0' : true;
+      setTrains3D(false);
+      var offVisible = getComputedStyle(trainGroups[0].g).opacity !== '0';
+      setTrains3D(true);
+      chk.__t3d = 'ready=' + T3D.ready + '(' + T3D.reason + ') 帧=' + T3D.frames + ' 实例=' + T3D.instances + '/' + exp +
+        '（可见车 ' + vis.length + '）· SVG隐=' + svgHidden + ' 头像留2D=' + avatarVisible + ' 关闭后SVG=' + offVisible;
+      return T3D.instances === exp && exp > 0 && svgHidden && avatarVisible && offVisible;
+    })());
+
+    chk('列车 3D 网格：两种品类 × 三种车厢角色齐备，顶点量同一量级', (function () {
+      var need = ['metro|0', 'metro|1', 'metro|2', 'tram|0', 'tram|1', 'tram|2'];
+      var ok = need.every(function (k) { return !!T3D.meshes[k] && T3D.meshes[k].verts >= 30; });
+      chk.__t3dmesh = need.join(' ') + ' · 顶点合计=' + T3D.verts;
+      return ok && T3D.verts < 12000;
+    })());
 
     /* 自创线路（data-custom.js 手写并入，不经过生成器）：蛋仔专线 + 头像列车 */
     chk('自创线路「蛋仔专线」：7 站在轨道上、头像列车按缩放放大、报站不叫地铁', (function () {
