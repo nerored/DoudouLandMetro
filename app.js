@@ -1504,13 +1504,15 @@
   var T3D = { enabled: false, ready: false, reason: 'init', canvas: null, gl: null,
     prog: null, locs: null, frames: 0, instances: 0, verts: 0, meshes: {}, quad: null, disc: null };
   var T3D_VS = 'attribute vec3 aPos;attribute vec3 aNor;attribute vec3 aCol;attribute float aLine;attribute float aDoor;' +
-    'uniform mat4 uM0;uniform mat4 uMh;uniform mat4 uM1;uniform float uTwo;uniform float uLen;uniform vec3 uLight;uniform float uDoor;' +
+    'uniform mat4 uM0;uniform mat4 uM1;uniform mat4 uM2;uniform mat4 uM3;uniform mat4 uM4;' +
+    'uniform float uTwo;uniform float uLen;uniform vec3 uLight;uniform float uDoor;' +
     'varying vec3 vCol;varying float vLine;varying float vLit;' +
-    'void main(){vec3 p=aPos;p.x+=aDoor*uDoor;vec4 v=vec4(p,1.0);' +
-    'float w=(uTwo>0.5)?clamp(aPos.x/uLen+0.5,0.0,1.0):0.0;' +
-    'mat4 A=uM0;mat4 B=uM1;float t=w;' +
-    'if(uTwo>0.5){if(w<0.5){A=uM0;B=uMh;t=w*2.0;}else{A=uMh;B=uM1;t=(w-0.5)*2.0;}}' +
-    'gl_Position=(1.0-t)*(A*v)+t*(B*v);vCol=aCol;vLine=aLine;' +
+    'void main(){vec3 p=aPos;p.x+=aDoor*uDoor;vec4 v=vec4(p,1.0);vec4 r;' +
+    'if(uTwo<0.5){r=uM0*v;}else{' +
+    'float f=clamp(aPos.x/uLen+0.5,0.0,1.0)*4.0;' +
+    'if(f<1.0){r=mix(uM0*v,uM1*v,f);}else if(f<2.0){r=mix(uM1*v,uM2*v,f-1.0);}' +
+    'else if(f<3.0){r=mix(uM2*v,uM3*v,f-2.0);}else{r=mix(uM3*v,uM4*v,f-3.0);}}' +
+    'gl_Position=r;vCol=aCol;vLine=aLine;' +
     'vLit=0.52+0.48*max(0.0,dot(aNor,uLight));}';
   var T3D_FS = 'precision mediump float;uniform vec3 uLine;uniform vec4 uTint;uniform float uMode;' +
     'varying vec3 vCol;varying float vLine;varying float vLit;' +
@@ -1795,13 +1797,15 @@
     var c = Math.cos(-ang), s = Math.sin(-ang);
     return [T3D_LIGHT[0] * c - T3D_LIGHT[1] * s, T3D_LIGHT[0] * s + T3D_LIGHT[1] * c, T3D_LIGHT[2]];
   }
-  /* 三骨绘制：m0=车尾、mh=车中、m1=车头 三个变换都钉在轨道弧上；two=1 时按局部 x 在相邻两骨间插值
-     （车体严格贴弧弯曲，中点亦在轨上）；two=0 时只用 m0（光晕/阴影等圆盘）。 */
-  function t3dDraw(mesh, m0, mh, m1, two, carLen, line, tint, mode, light, door) {
-    var gl = T3D.gl, lo = T3D.locs;
+  /* 五骨绘制：ms = [m0..m4] 五个变换都钉在轨道弧上（局部 x = ∓L/2 / ∓L/4 / 0）；
+     two=1 时按局部 x 在相邻两骨间插值（折点误差约为三骨版的 1/4）；two=0 时只用 m0（光晕/阴影）。 */
+  function t3dDraw(mesh, ms, two, carLen, line, tint, mode, light, door) {
+    var gl = T3D.gl, lo = T3D.locs, m0 = ms[0];
     gl.uniformMatrix4fv(lo.uM0, false, m0);
-    gl.uniformMatrix4fv(lo.uMh, false, mh || m0);
-    gl.uniformMatrix4fv(lo.uM1, false, m1 || m0);
+    gl.uniformMatrix4fv(lo.uM1, false, ms[1] || m0);
+    gl.uniformMatrix4fv(lo.uM2, false, ms[2] || m0);
+    gl.uniformMatrix4fv(lo.uM3, false, ms[3] || m0);
+    gl.uniformMatrix4fv(lo.uM4, false, ms[4] || m0);
     gl.uniform1f(lo.uTwo, two ? 1 : 0);
     gl.uniform1f(lo.uLen, carLen || 1);
     gl.uniform3fv(lo.uLine, line);
@@ -1857,7 +1861,7 @@
       for (hc = 0; hc < o.spec.cars; hc++) {
         var sh = head0 - o.tr.dir * (hc * (o.spec.carLen + o.spec.carGap) + o.spec.carLen / 2);
         var ph = pointAt(o.rt, sh);
-        t3dDraw(T3D.disc, t3dMat(ph.x, ph.y, 0, o.spec.carHW + 7, o.spec.carHW + 7, false), null, null, 0, 0,
+        t3dDraw(T3D.disc, [t3dMat(ph.x, ph.y, 0, o.spec.carHW + 7, o.spec.carHW + 7, false)], 0, 0,
           lc, [lc[0], lc[1], lc[2], pulse], 1, [0, 0, 1]);
       }
     }
@@ -1869,8 +1873,8 @@
       var pa = pointAt(o.rt, midS - 0.8), pb = pointAt(o.rt, midS + 0.8);
       var angM = Math.atan2(pb.y - pa.y, pb.x - pa.x);
       var q1 = totalLen(o.spec) / 2 + 4, q2 = o.spec.carHW + 4;
-      t3dDraw(T3D.quad, t3dMat(pm.x + 2.4, pm.y + 3.4, angM, q1, q2, false), null, null, 0, 0, [0, 0, 0], [0.04, 0.06, 0.09, 0.14], 1, [0, 0, 1]);
-      t3dDraw(T3D.quad, t3dMat(pm.x + 3.2, pm.y + 4.4, angM, q1 * 1.06, q2 * 1.25, false), null, null, 0, 0, [0, 0, 0], [0.04, 0.06, 0.09, 0.07], 1, [0, 0, 1]);
+      t3dDraw(T3D.quad, [t3dMat(pm.x + 2.4, pm.y + 3.4, angM, q1, q2, false)], 0, 0, [0, 0, 0], [0.04, 0.06, 0.09, 0.14], 1, [0, 0, 1]);
+      t3dDraw(T3D.quad, [t3dMat(pm.x + 3.2, pm.y + 4.4, angM, q1 * 1.06, q2 * 1.25, false)], 0, 0, [0, 0, 0], [0.04, 0.06, 0.09, 0.07], 1, [0, 0, 1]);
     }
     /* 车厢：按屏上 y（世界 y）排序，南边的压北边的（军械投影的正确遮挡顺序） */
     var cars = [];
@@ -1886,13 +1890,16 @@
         var aF = pointAt(o.rt, sF - o.tr.dir * 0.6), bF = pointAt(o.rt, sF + o.tr.dir * 0.6);
         var aR = pointAt(o.rt, sR - o.tr.dir * 0.6), bR = pointAt(o.rt, sR + o.tr.dir * 0.6);
         var angF = Math.atan2(bF.y - aF.y, bF.x - aF.x), angR = Math.atan2(bR.y - aR.y, bR.x - aR.x);
-        /* 三骨变换：局部 x=−L/2 → 尾端弧点、x=0 → 中点弧点、x=+L/2 → 头端弧点（端点与中点严格贴轨） */
-        var aa = pointAt(o.rt, s2 - o.tr.dir * 0.6), bb = pointAt(o.rt, s2 + o.tr.dir * 0.6);
-        var angM2 = Math.atan2(bb.y - aa.y, bb.x - aa.x);
-        var mR = t3dMat(pR.x + Math.cos(angR) * half, pR.y + Math.sin(angR) * half, angR, 1, 1, true);
-        var mH = t3dMat(p2.x, p2.y, angM2, 1, 1, true);
-        var mF = t3dMat(pF.x - Math.cos(angF) * half, pF.y - Math.sin(angF) * half, angF, 1, 1, true);
-        cars.push({ py: p2.y, ang: angM2, m0: mR, mh: mH, m1: mF, len: o.spec.carLen,
+        /* 五骨贴合：局部 x = ∓L/2、∓L/4、0 五个点各自钉在轨道弧上（角度取相邻两骨连线方向），
+           着色器在相邻两骨之间按局部 x 插值——折点误差约为三骨版的 1/4 */
+        var bones = [], k2, xsB = [-half, -half / 2, 0, half / 2, half], psB = [];
+        for (k2 = 0; k2 < 5; k2++) psB.push(pointAt(o.rt, s2 + o.tr.dir * xsB[k2]));
+        for (k2 = 0; k2 < 5; k2++) {
+          var aB = psB[Math.max(0, k2 - 1)], bB = psB[Math.min(4, k2 + 1)];
+          var angB = Math.atan2(bB.y - aB.y, bB.x - aB.x);
+          bones.push(t3dMat(psB[k2].x - Math.cos(angB) * xsB[k2], psB[k2].y - Math.sin(angB) * xsB[k2], angB, 1, 1, true));
+        }
+        cars.push({ py: p2.y, ang: Math.atan2(psB[3].y - psB[1].y, psB[3].x - psB[1].x), bones: bones, len: o.spec.carLen,
           role: c2 === 0 ? 0 : (c2 === o.spec.cars - 1 ? 2 : ((o.spec !== CFG.tram && (c2 === 1 || c2 === 5)) ? 3 : 1)),
           kind: o.spec === CFG.tram ? 'tram' : 'metro', color: o.rt.color, door: o.tr.door || 0 });
       }
@@ -1903,7 +1910,7 @@
       var it = cars[i];
       var mesh = T3D.meshes[it.kind + '|' + it.role] || T3D.meshes[it.kind + '|1'];
       if (!mesh) continue;
-      t3dDraw(mesh, it.m0, it.mh, it.m1, 1, it.len, t3dHex(it.color), [0, 0, 0, 1], 0, t3dLightLocal(it.ang), it.door);
+      t3dDraw(mesh, it.bones, 1, it.len, t3dHex(it.color), [0, 0, 0, 1], 0, t3dLightLocal(it.ang), it.door);
       inst++;
     }
     T3D.frames++;
@@ -1930,7 +1937,8 @@
       aPos: gl.getAttribLocation(prog, 'aPos'), aNor: gl.getAttribLocation(prog, 'aNor'),
       aCol: gl.getAttribLocation(prog, 'aCol'), aLine: gl.getAttribLocation(prog, 'aLine'),
       aDoor: gl.getAttribLocation(prog, 'aDoor'),
-      uM0: gl.getUniformLocation(prog, 'uM0'), uMh: gl.getUniformLocation(prog, 'uMh'), uM1: gl.getUniformLocation(prog, 'uM1'),
+      uM0: gl.getUniformLocation(prog, 'uM0'), uM1: gl.getUniformLocation(prog, 'uM1'),
+      uM2: gl.getUniformLocation(prog, 'uM2'), uM3: gl.getUniformLocation(prog, 'uM3'), uM4: gl.getUniformLocation(prog, 'uM4'),
       uTwo: gl.getUniformLocation(prog, 'uTwo'), uLen: gl.getUniformLocation(prog, 'uLen'),
       uLight: gl.getUniformLocation(prog, 'uLight'),
       uLine: gl.getUniformLocation(prog, 'uLine'), uTint: gl.getUniformLocation(prog, 'uTint'),
@@ -5533,8 +5541,8 @@
       })();
     })();
 
-    chk('3D 车厢三骨贴合轨道：端/中点钉在弧上，四分之一点偏离 < 2.5 单位（紧密弯道不切角）', (function () {
-      var worst = 0, n = 0;
+    chk('3D 车厢五骨贴合轨道：端/中点钉在弧上，子段中点偏离 < 1.2 单位', (function () {
+      var worst = 0, n = 0, where = '-';
       trains.forEach(function (tr) {
         var rt = ROUTES[tr.routeKey];
         var spec = specOf(tr);
@@ -5542,31 +5550,27 @@
         var half = spec.carLen / 2, head = kmToMap(rt, tr.posKm);
         for (var c2 = 0; c2 < spec.cars; c2++) {
           var s2 = head - tr.dir * (c2 * (spec.carLen + spec.carGap) + spec.carLen / 2);
-          var pF = pointAt(rt, s2 + tr.dir * half), pR = pointAt(rt, s2 - tr.dir * half), pM = pointAt(rt, s2);
-          var aF = pointAt(rt, s2 + tr.dir * half - tr.dir * 0.6), bF = pointAt(rt, s2 + tr.dir * half + tr.dir * 0.6);
-          var aR = pointAt(rt, s2 - tr.dir * half - tr.dir * 0.6), bR = pointAt(rt, s2 - tr.dir * half + tr.dir * 0.6);
-          var aM = pointAt(rt, s2 - 0.6), bM = pointAt(rt, s2 + 0.6);
-          var angF = Math.atan2(bF.y - aF.y, bF.x - aF.x), angR = Math.atan2(bR.y - aR.y, bR.x - aR.x);
-          var angM = Math.atan2(bM.y - aM.y, bM.x - aM.x);
-          var oR = { x: pR.x + Math.cos(angR) * half, y: pR.y + Math.sin(angR) * half };
-          var oH = { x: pM.x, y: pM.y };
-          var oF = { x: pF.x - Math.cos(angF) * half, y: pF.y - Math.sin(angF) * half };
-          /* 四分之一点（w=0.25/0.75）渲染位置 = 相邻两骨在局部 x=∓L/4 处 50/50 混合，对比弧上真实点 */
-          var q = half / 2;
-          var x0a = oR.x + Math.cos(angR) * (-q), y0a = oR.y + Math.sin(angR) * (-q);
-          var x0b = oH.x + Math.cos(angM) * (-q), y0b = oH.y + Math.sin(angM) * (-q);
-          var x1a = oH.x + Math.cos(angM) * q, y1a = oH.y + Math.sin(angM) * q;
-          var x1b = oF.x + Math.cos(angF) * q, y1b = oF.y + Math.sin(angF) * q;
-          var arc0 = pointAt(rt, s2 - tr.dir * q), arc1 = pointAt(rt, s2 + tr.dir * q);
-          var dq0 = Math.hypot((x0a + x0b) / 2 - arc0.x, (y0a + y0b) / 2 - arc0.y);
-          var dq1 = Math.hypot((x1a + x1b) / 2 - arc1.x, (y1a + y1b) / 2 - arc1.y);
-          var dq = Math.max(dq0, dq1);
-          if (dq > worst) worst = dq;
-          n++;
+          var xs = [-half, -half / 2, 0, half / 2, half], ps2 = [], k2;
+          for (k2 = 0; k2 < 5; k2++) ps2.push(pointAt(rt, s2 + tr.dir * xs[k2]));
+          for (k2 = 0; k2 < 4; k2++) {
+            var a3 = ps2[Math.max(0, k2 - 1)], b3 = ps2[Math.min(4, k2 + 1)];
+            var angK = Math.atan2(b3.y - a3.y, b3.x - a3.x);
+            var a4 = ps2[k2], b4 = ps2[Math.min(4, k2 + 2)];
+            var angN = Math.atan2(b4.y - a4.y, b4.x - a4.x);
+            var q = (xs[k2] + xs[k2 + 1]) / 2;
+            var oK = { x: ps2[k2].x - Math.cos(angK) * xs[k2], y: ps2[k2].y - Math.sin(angK) * xs[k2] };
+            var oN = { x: ps2[k2 + 1].x - Math.cos(angN) * xs[k2 + 1], y: ps2[k2 + 1].y - Math.sin(angN) * xs[k2 + 1] };
+            var px2 = 0.5 * (oK.x + Math.cos(angK) * q) + 0.5 * (oN.x + Math.cos(angN) * q);
+            var py2 = 0.5 * (oK.y + Math.sin(angK) * q) + 0.5 * (oN.y + Math.sin(angN) * q);
+            var arcq = pointAt(rt, s2 + tr.dir * q);
+            var dq = Math.hypot(px2 - arcq.x, py2 - arcq.y);
+            if (dq > worst) { worst = dq; where = tr.routeKey + '@s=' + Math.round(s2) + ' 车' + c2; }
+            n++;
+          }
         }
       });
-      chk.__hug = '车厢=' + n + ' 最大四分点偏离=' + f2(worst) + ' 单位（≈' + f1(worst * 20) + ' m）';
-      return n > 40 && worst < 2.5;
+      chk.__hug = '子段=' + n + ' 最大偏离=' + f2(worst) + ' 单位（≈' + f1(worst * 20) + ' m）最差=' + where;
+      return n > 300 && worst < 1.2;
     })(), chk.__hug);
 
     chk('S3 录音路由：福田到站前/到站、资阳临空到站前（其他站/线路/时机不受影响；失败回退 TTS）', (function () {
