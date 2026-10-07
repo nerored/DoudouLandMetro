@@ -3004,8 +3004,9 @@
   /* —— 车站报站录音（用户提供）——
      键 = '线路key|站id|时机'，值 = 仓库里的音频文件名（相对路径，零依赖、file:// 也能用）。
      命中时该条报站的**中英 TTS 整条换成录音**（字幕照常显示两行）；文件拉不到/解码失败会自动回退到这句话的 TTS 文本。
-     目前只有 S3（资阳线）福田站的「到站」：futian.m4a（AAC-LC 48kHz 17.0s）。 */
-  var VOICE_CLIPS = { 'S3|s311|open': 'futian.m4a' };
+     时机语义：'depart' = 离开上一站时的「前方到站〔站id〕」预告（到站前播）；'open' = 开门时的「〔站id〕站到了」。
+     目前只有 S3（资阳线）福田站**到站前**：futian.m4a（AAC-LC 48kHz 17.0s）。 */
+  var VOICE_CLIPS = { 'S3|s311|depart': 'futian.m4a' };
   function voiceClipFor(lineKey, stationId, kind) { return VOICE_CLIPS[lineKey + '|' + stationId + '|' + kind] || null; }
 
   function bgmEnabled(flag) {
@@ -3441,8 +3442,10 @@
     if (kind === 'open' || kind === 'arrive') chime('open');
     else if (kind === 'closing') chime('warn');
     else chime('close');
-    /* 到站报站若配了车站录音（S3 福田站）：整条换成录音，中英 TTS 都不再念（字幕已在上方显示） */
-    var clipName = kind === 'open' ? voiceClipFor(r.lineKey, st.curId, kind) : null;
+    /* 配了车站录音的播报：整条换成录音，中英 TTS 都不再念（字幕已在上方显示）。
+       'depart' = 「前方到站 X」按**下一站**匹配（到站前播）；'open' = 「X 站到了」按当前站匹配。 */
+    var clipId = kind === 'depart' ? after : (kind === 'open' ? st.curId : null);
+    var clipName = clipId ? voiceClipFor(r.lineKey, clipId, kind) : null;
     if (clipName) enqueueClip(clipName, text);
     else speakPair(text, en);   /* 成都地铁：先中文后英文（英文只在到站/换乘/终点信息上出现） */
   }
@@ -4625,14 +4628,14 @@
       })();
     })();
 
-    chk('S3 福田站到站播报 = 录音 futian.m4a（其他站/线路/时机不受影响；播放失败回退 TTS）', (function () {
-      var routeOk = voiceClipFor('S3', 's311', 'open') === 'futian.m4a' &&
-        !voiceClipFor('S3', 's311', 'closing') && !voiceClipFor('19', 's311', 'open') &&
-        !voiceClipFor('S3', 's366', 'open');
+    chk('S3 福田站「前方到站」播报 = 录音 futian.m4a（到站前播放；其他站/线路/时机不受影响；失败回退 TTS）', (function () {
+      var routeOk = voiceClipFor('S3', 's311', 'depart') === 'futian.m4a' &&
+        !voiceClipFor('S3', 's311', 'open') && !voiceClipFor('S3', 's311', 'closing') &&
+        !voiceClipFor('19', 's311', 'depart') && !voiceClipFor('S3', 's366', 'depart');
       var bakOn = audio.on, bakActive = activeIdx, bakMult = ui.mult;
       var prevQ = speechQ.slice(), prevBusy = speechBusy;
       var played = [], realStart = startClip;
-      var s3i = -1, prevCur = null;
+      var s3i = -1, prevCur = null, prevDir = 1;
       trains.forEach(function (t, i) { if (t.routeKey === 'S3') s3i = i; });
       var clipOk = false, ttsOk = false, flipOk = false;
       try {
@@ -4641,15 +4644,17 @@
         ui.mult = 1;
         if (s3i >= 0) {
           prevCur = trains[s3i].curId;
+          prevDir = trains[s3i].dir;
           setActive(s3i);
-          state.curId = 's311';
+          state.curId = 's366';                       // 资阳临空：下一站就是福田（到站前那一刻）
+          state.dir = 1;
           speechQ = []; speechBusy = false; speechSeq++;
           played = [];
-          announce(state, 'open');                    // 到站：应走录音、不落 TTS
+          announce(state, 'depart');                  // 「前方到站福田」：应走录音、不落 TTS
           clipOk = played.length === 1 && played[0] === 'futian.m4a' &&
             speechQ.every(function (x) { return !x.clip; });
           speechQ = []; speechBusy = false; speechSeq++; played = [];
-          announce(state, 'closing');                 // 关门：不受影响，照常 TTS
+          announce(state, 'open');                    // 开门「资阳临空站到了」：不受影响，照常 TTS
           ttsOk = played.length === 0 && speechQ.length >= 1 &&
             speechQ.every(function (x) { return !!x.text && !x.clip; });
         }
@@ -4664,10 +4669,10 @@
         speechQ = prevQ.slice(); speechBusy = prevBusy; speechSeq++;
         setSound(bakOn);
         ui.mult = bakMult;
-        if (s3i >= 0 && prevCur !== null) trains[s3i].curId = prevCur;
+        if (s3i >= 0 && prevCur !== null) { trains[s3i].curId = prevCur; trains[s3i].dir = prevDir; }
         try { setActive(bakActive); } catch (e0) { void e0; }
       }
-      chk.__cliproute = '路由=' + routeOk + ' 福田到站=' + clipOk + ' 关门照常=' + ttsOk + ' 回退=' + flipOk;
+      chk.__cliproute = '路由=' + routeOk + ' 到站前=' + clipOk + ' 开门照常=' + ttsOk + ' 回退=' + flipOk;
       return routeOk && clipOk && ttsOk && flipOk;
     })(), chk.__cliproute);
 
