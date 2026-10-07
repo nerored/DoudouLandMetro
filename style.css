@@ -130,6 +130,7 @@ body {
   overflow: hidden;
   background: radial-gradient(120% 90% at 50% 0%, var(--map-a) 0%, var(--map-b) 100%);
   touch-action: none;            /* 手势全部由 Pointer Events 接管 */
+  isolation: isolate;            /* 为 #map3d(z-1) 建堆叠上下文：GL 底图在 SVG 之下、舞台底色之上 */
 }
 
 #map {
@@ -989,3 +990,9 @@ body {
    头像列车（蛋仔专线）保留 2D 可见；3D 画布在地图之上、贴片（z-36）与气泡之下。 */
 #trains3d { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
 #stage.t3d #trains .train:not(.keep3d) { opacity: 0; }
+
+/* ===== 底图/轨道/站点 WebGL 层（app.js 的 initMap3D/g3dDraw；?g3d=0 关） =====
+   开启时（#stage.g3d）：隐藏 SVG 的纹理/网格/道路/水系/站台/轨道/站点（visibility:hidden——保留
+   getBBox 与断言基准），水系注记（#wlabels）保留在 DOM；#map3d 在地图之上、列车层之下。 */
+#map3d { position: absolute; left: 0; top: 0; pointer-events: none; z-index: -1; }
+#stage.g3d #bg > rect, #stage.g3d #bg > g:not(#wlabels), #stage.g3d #rails, #stage.g3d #platforms, #stage.g3d #stations { visibility: hidden; }

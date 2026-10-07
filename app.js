@@ -631,7 +631,7 @@
     })();
 
     /* 水系注记：取几何代表点，河流沿切线方向旋转 */
-    var wlab = svg('g', null, g);
+    var wlab = svg('g', { id: 'wlabels' }, g);
     WATER_LABELS.forEach(function (t) {
       var nm = t[0], geo = null, isRiver = false;
       (M.water.rivers || []).forEach(function (r) { if (r.name === nm) { geo = r.pts; isRiver = true; } });
@@ -1076,7 +1076,7 @@
      拖动/缩放/切车等需要立即生效的地方调 invalidateTrains()。 */
   var trainsDirty = true;
   var drawEpoch = 0;                    // 每次 invalidateTrains() 自增：强制整车队重画一遍
-  function invalidateTrains() { trainsDirty = true; drawEpoch++; }
+  function invalidateTrains() { trainsDirty = true; drawEpoch++; G3D.dirty = true; }
   function trainsInterval() {
     if (ui.paused || document.hidden === true) return Infinity;
     if (view.k < CFG.lodK) return 1 / CFG.lodHz;
@@ -1109,6 +1109,380 @@
   }
 
   /* 逐列车绘制（贴在各自线路上） */
+  /* ==================================== 底图/轨道/站点 WebGL 层（?g3d=0 关） ======================
+     把「城市纹理 + 网格 + 道路 + 水体 + 站台 + 轨道 + 站点」从 SVG 搬到一层 #map3d canvas：静态几何一次性
+     烘进 VBO（世界坐标），平移/缩放只改矩阵（applyView/invalidateTrains 里置脏，tick 里重画）；
+     文字注记、标签与全部交互仍留 DOM。几何按线路分组，图例筛选照常生效；WebGL 不可用或被关时
+     整层不动、自动回落 SVG（CSS 仅把对应 SVG 图层 visibility:hidden）。 */
+  var G3D = {
+    enabled: false, ready: false, reason: 'init', canvas: null, gl: null,
+    prog: null, locs: null, texProg: null, texLocs: null, tex: null,
+    lineBufs: {}, stBufs: {}, shared: {}, bgQuad: null,
+    dirty: true, draws: 0, verts: 0
+  };
+  var G3D_VS = 'attribute vec2 aPos;attribute vec3 aCol;attribute float aLine;' +
+    'uniform mat4 uM;uniform vec3 uLine;uniform vec4 uTint;' +
+    'varying vec3 vCol;varying float vA;' +
+    'void main(){gl_Position=uM*vec4(aPos,0.0,1.0);vCol=mix(aCol,uLine,aLine);vA=uTint.a;}';
+  var G3D_FS = 'precision mediump float;varying vec3 vCol;varying float vA;' +
+    'void main(){gl_FragColor=vec4(vCol,vA);}';
+  var G3D_TVS = 'attribute vec2 aPos;uniform mat4 uM;varying vec2 vUV;' +
+    'void main(){gl_Position=uM*vec4(aPos,0.0,1.0);vUV=aPos/96.0;}';
+  var G3D_TFS = 'precision mediump float;varying vec2 vUV;uniform sampler2D uTex;' +
+    'void main(){gl_FragColor=texture2D(uTex,vUV);}';
+
+  function g3dPush(o2, x, y, c, ln) { o2.p.push(x, y); o2.c.push(c[0], c[1], c[2]); o2.l.push(ln || 0); }
+  function g3dTri(o2, a, b, c2, col, ln) {
+    g3dPush(o2, a[0], a[1], col, ln); g3dPush(o2, b[0], b[1], col, ln); g3dPush(o2, c2[0], c2[1], col, ln);
+  }
+  /* 折线描边（miter 接头，限 1.8×；不做圆端——底图级别够用） */
+  function g3dStroke(o2, pts, w, col, ln) {
+    var n = pts.length; if (n < 2) return;
+    var hw = w / 2, i, Lp = [], Rp = [];
+    for (i = 0; i < n; i++) {
+      var mx, my, ml = 1;
+      if (i === 0) { var ax = pts[1][0] - pts[0][0], ay = pts[1][1] - pts[0][1]; var dl = Math.hypot(ax, ay) || 1; mx = -ay / dl; my = ax / dl; }
+      else if (i === n - 1) { var bx = pts[n - 1][0] - pts[n - 2][0], by = pts[n - 1][1] - pts[n - 2][1]; var dl2 = Math.hypot(bx, by) || 1; mx = -by / dl2; my = bx / dl2; }
+      else {
+        var ux = pts[i][0] - pts[i - 1][0], uy = pts[i][1] - pts[i - 1][1];
+        var vx = pts[i + 1][0] - pts[i][0], vy = pts[i + 1][1] - pts[i][1];
+        var ul = Math.hypot(ux, uy) || 1, vl = Math.hypot(vx, vy) || 1;
+        var n1x = -uy / ul, n1y = ux / ul, n2x = -vy / vl, n2y = vx / vl;
+        var sx = n1x + n2x, sy = n1y + n2y, sl = Math.hypot(sx, sy);
+        if (sl > 1e-4) { mx = sx / sl; my = sy / sl; var dd = mx * n1x + my * n1y; ml = dd > 0.35 ? 1 / dd : 1.8; }
+        else { mx = n1x; my = n1y; }
+      }
+      Lp.push([pts[i][0] + mx * hw * ml, pts[i][1] + my * hw * ml]);
+      Rp.push([pts[i][0] - mx * hw * ml, pts[i][1] - my * hw * ml]);
+    }
+    for (i = 0; i < n - 1; i++) {
+      g3dTri(o2, Lp[i], Rp[i], Rp[i + 1], col, ln);
+      g3dTri(o2, Lp[i], Rp[i + 1], Lp[i + 1], col, ln);
+    }
+  }
+  function g3dInTri(p, a, b, c2) {
+    var d1 = (p[0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (p[1] - b[1]);
+    var d2 = (p[0] - c2[0]) * (b[1] - c2[1]) - (b[0] - c2[0]) * (p[1] - c2[1]);
+    var d3 = (p[0] - a[0]) * (c2[1] - a[1]) - (c2[0] - a[0]) * (p[1] - a[1]);
+    var neg = d1 < 0 || d2 < 0 || d3 < 0, pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
+  }
+  /* 多边形填充（耳切；逆时针化；退化时保底不卡死） */
+  function g3dPoly(o2, pts, col) {
+    var idx = [], i;
+    for (i = 0; i < pts.length; i++) idx.push(i);
+    var area = 0;
+    for (i = 0; i < pts.length; i++) { var a = pts[i], b = pts[(i + 1) % pts.length]; area += a[0] * b[1] - b[0] * a[1]; }
+    if (area < 0) idx.reverse();
+    var guard = 0;
+    while (idx.length > 3 && guard++ < pts.length * pts.length + 64) {
+      var clipped = false;
+      for (i = 0; i < idx.length; i++) {
+        var i0 = idx[(i + idx.length - 1) % idx.length], i1 = idx[i], i2 = idx[(i + 1) % idx.length];
+        var p0 = pts[i0], p1 = pts[i1], p2 = pts[i2];
+        var cr = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]);
+        if (cr <= 0) continue;
+        var bad = false, j;
+        for (j = 0; j < idx.length && !bad; j++) {
+          var ij = idx[j];
+          if (ij === i0 || ij === i1 || ij === i2) continue;
+          if (g3dInTri(pts[ij], p0, p1, p2)) bad = true;
+        }
+        if (bad) continue;
+        g3dTri(o2, p0, p1, p2, col, 0);
+        idx.splice(i, 1); clipped = true; break;
+      }
+      if (!clipped) break;
+    }
+    if (idx.length === 3) g3dTri(o2, pts[idx[0]], pts[idx[1]], pts[idx[2]], col, 0);
+  }
+  function g3dDisc(o2, cx, cy, r, col, ln) {
+    var SEG = 12, i, a0 = 0;
+    for (i = 1; i <= SEG; i++) {
+      var a = i / SEG * Math.PI * 2;
+      g3dTri(o2, [cx, cy], [cx + Math.cos(a0) * r, cy + Math.sin(a0) * r], [cx + Math.cos(a) * r, cy + Math.sin(a) * r], col, ln);
+      a0 = a;
+    }
+  }
+  function g3dRing(o2, cx, cy, r0, r1, col, ln) {
+    var SEG = 14, i, a0 = 0;
+    for (i = 1; i <= SEG; i++) {
+      var a = i / SEG * Math.PI * 2;
+      var p0 = [cx + Math.cos(a0) * r0, cy + Math.sin(a0) * r0], p1 = [cx + Math.cos(a0) * r1, cy + Math.sin(a0) * r1];
+      var p2 = [cx + Math.cos(a) * r1, cy + Math.sin(a) * r1], p3 = [cx + Math.cos(a) * r0, cy + Math.sin(a) * r0];
+      g3dTri(o2, p0, p1, p2, col, ln); g3dTri(o2, p0, p2, p3, col, ln);
+      a0 = a;
+    }
+  }
+  function g3dPack(o2) {
+    var n = o2.p.length / 2, d = new Float32Array(n * 6), i;
+    for (i = 0; i < n; i++) {
+      d[i * 6] = o2.p[i * 2]; d[i * 6 + 1] = o2.p[i * 2 + 1];
+      d[i * 6 + 2] = o2.c[i * 3]; d[i * 6 + 3] = o2.c[i * 3 + 1]; d[i * 6 + 4] = o2.c[i * 3 + 2];
+      d[i * 6 + 5] = o2.l[i];
+    }
+    return d;
+  }
+  function g3dUpload(d) {
+    var gl = G3D.gl, buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, d, gl.STATIC_DRAW);
+    return { buf: buf, verts: d.length / 6 };
+  }
+  function g3dBindFlat(b) {
+    var gl = G3D.gl, lo = G3D.locs;
+    gl.bindBuffer(gl.ARRAY_BUFFER, b.buf);
+    gl.enableVertexAttribArray(lo.aPos); gl.vertexAttribPointer(lo.aPos, 2, gl.FLOAT, false, 24, 0);
+    gl.enableVertexAttribArray(lo.aCol); gl.vertexAttribPointer(lo.aCol, 3, gl.FLOAT, false, 24, 8);
+    gl.enableVertexAttribArray(lo.aLine); gl.vertexAttribPointer(lo.aLine, 1, gl.FLOAT, false, 24, 20);
+  }
+  function g3dBuildAll() {
+    var i, k;
+    /* 道路：按等级（casing 描边 + 主色） */
+    var RW = { motorway: 7, trunk: 5.5, primary: 4 };
+    var CAS = [0xde / 255, 0xd8 / 255, 0xca / 255], RD = [1, 1, 1];
+    var oCas = { p: [], c: [], l: [] }, oRd = { p: [], c: [], l: [] };
+    var byCls = {};
+    (M.roads || []).forEach(function (rd) {
+      if (!rd.pts || rd.pts.length < 2) return;
+      (byCls[rd.c] = byCls[rd.c] || []).push(rd.pts);
+    });
+    Object.keys(byCls).forEach(function (cls) {
+      var w = RW[cls] || 4.5;
+      byCls[cls].forEach(function (pts) {
+        g3dStroke(oCas, pts, w + 2.6, CAS, 0);
+        g3dStroke(oRd, pts, w, RD, 0);
+      });
+    });
+    G3D.shared.roadCas = g3dUpload(g3dPack(oCas));
+    G3D.shared.road = g3dUpload(g3dPack(oRd));
+    G3D.verts += oCas.p.length / 2 + oRd.p.length / 2;
+    /* 水体：大河 22 / 小河 11 / 湖泊多边形 */
+    var WA = [0xc9 / 255, 0xdc / 255, 0xed / 255];
+    var oBig = { p: [], c: [], l: [] }, oSmall = { p: [], c: [], l: [] }, oLake = { p: [], c: [], l: [] };
+    ((M.water && M.water.rivers) || []).forEach(function (rv) {
+      if (!rv.pts || rv.pts.length < 2) return;
+      var big = /锦江|府河|南河/.test(rv.name || '');
+      g3dStroke(big ? oBig : oSmall, rv.pts, big ? 22 : 11, WA, 0);
+    });
+    ((M.water && M.water.lakes) || []).forEach(function (lk) {
+      if (!lk.pts || lk.pts.length < 3) return;
+      g3dPoly(oLake, lk.pts, WA);
+    });
+    G3D.shared.watBig = g3dUpload(g3dPack(oBig));
+    G3D.shared.watSmall = g3dUpload(g3dPack(oSmall));
+    G3D.shared.lake = g3dUpload(g3dPack(oLake));
+    G3D.verts += (oBig.p.length + oSmall.p.length + oLake.p.length) / 2;
+    /* 网格 250 单位 */
+    var GR = [0xe3 / 255, 0xdf / 255, 0xd3 / 255];
+    var oG = { p: [], c: [], l: [] };
+    for (i = Math.ceil(MAPBOX.x / 250) * 250; i < MAPBOX.x + MAPBOX.w; i += 250)
+      g3dStroke(oG, [[i, MAPBOX.y], [i, MAPBOX.y + MAPBOX.h]], 1, GR, 0);
+    for (i = Math.ceil(MAPBOX.y / 250) * 250; i < MAPBOX.y + MAPBOX.h; i += 250)
+      g3dStroke(oG, [[MAPBOX.x, i], [MAPBOX.x + MAPBOX.w, i]], 1, GR, 0);
+    G3D.shared.grid = g3dUpload(g3dPack(oG));
+    /* 每条线：轨道（道床 + 彩色轨）/ 站台；去重逻辑与 buildRail 一致 */
+    var order = [];
+    (M.lines || []).forEach(function (line) {
+      var seen = {};
+      line.services.forEach(function (s) {
+        (s.tracks || []).forEach(function (tk) {
+          if (!seen[tk] && TRACKS[tk]) { seen[tk] = 1; order.push({ k: tk, lineKey: line.key }); }
+        });
+      });
+    });
+    order.forEach(function (o3) {
+      var tr = TRACKS[o3.k];
+      var pts = tr.samples.map(function (p) { return [p.x, p.y]; });
+      var lb = G3D.lineBufs[o3.lineKey] || (G3D.lineBufs[o3.lineKey] = { bed: { p: [], c: [], l: [] }, rail: { p: [], c: [], l: [] }, plat: { p: [], c: [], l: [] } });
+      g3dStroke(lb.bed, pts, 15, [1, 1, 1], 0);
+      g3dStroke(lb.rail, pts, 10.5, [1, 1, 1], 1);
+    });
+    M.stations.forEach(function (st) {
+      servicesContaining(st.id).forEach(function (kk) {
+        var ii = ROUTES[kk].ids.indexOf(st.id);
+        if (ii < 0) return;
+        var lk2 = ROUTES[kk].lineKey;
+        var lb2 = G3D.lineBufs[lk2]; if (!lb2) return;
+        var ph = isTram(lk2) ? CFG.tramPlatHalf : CFG.platHalf;
+        var pw = isTram(lk2) ? CFG.tramPlatHW : CFG.platHW;
+        var sA = ROUTES[kk].mapAt[ii] + ph, sB = ROUTES[kk].mapAt[ii] - ph;
+        var pts2 = [], nSeg = 6;
+        for (var q = 0; q <= nSeg; q++) {
+          var pp = pointAt(ROUTES[kk], sA + (sB - sA) * q / nSeg);
+          pts2.push([pp.x, pp.y]);
+        }
+        g3dStroke(lb2.plat, pts2, pw * 2, isTram(lk2) ? [0xcb / 255, 0xd8 / 255, 0xbd / 255] : [0xcf / 255, 0xc9 / 255, 0xbb / 255], 0);
+      });
+    });
+    /* 站点按线归批：每个站按主色烘进它所属的每条线的批（叠画同色，图例筛选逐线生效） */
+    M.stations.forEach(function (st) {
+      var linesArr = st.lines || [];
+      if (!linesArr.length) return;
+      var prim = LINE_BY_KEY[linesArr[0]] || { color: '#888888' };
+      var col = t3dHex(prim.color);
+      var big = linesArr.length > 1 || (st.tr && st.tr.length);
+      var r = big ? 6.4 : (st.term ? 6 : 5);
+      linesArr.forEach(function (lk3) {
+        var sb = G3D.stBufs[lk3] || (G3D.stBufs[lk3] = { p: [], c: [], l: [] });
+        if (big) {
+          g3dDisc(sb, st.x, st.y, r, [1, 1, 1], 0);
+          g3dRing(sb, st.x, st.y, r - 1.5, r + 1.5, col, 1);
+          g3dRing(sb, st.x, st.y, r + 2.65, r + 4.15, col, 1);
+        } else if (st.term) {
+          g3dDisc(sb, st.x, st.y, r, col, 1);
+          g3dRing(sb, st.x, st.y, r - 0.2, r + 1.3, [1, 1, 1], 0);
+        } else {
+          g3dDisc(sb, st.x, st.y, r, [1, 1, 1], 0);
+          g3dRing(sb, st.x, st.y, r - 1.5, r + 1.5, col, 1);
+        }
+        if (st.noStop) g3dRing(sb, st.x, st.y, r - 0.3, r + 0.6, col, 1);
+      });
+    });
+    Object.keys(G3D.lineBufs).forEach(function (lk4) {
+      var b2 = G3D.lineBufs[lk4];
+      b2.bed = g3dUpload(g3dPack(b2.bed));
+      b2.rail = g3dUpload(g3dPack(b2.rail));
+      b2.plat = g3dUpload(g3dPack(b2.plat));
+      G3D.verts += b2.bed.verts + b2.rail.verts + b2.plat.verts;
+    });
+    Object.keys(G3D.stBufs).forEach(function (lk5) {
+      var b3 = G3D.stBufs[lk5];
+      G3D.stBufs[lk5] = g3dUpload(g3dPack(b3));
+      G3D.verts += G3D.stBufs[lk5].verts;
+    });
+  }
+  function g3dDraw() {
+    if (!G3D.enabled || !G3D.ready || !ready) return;
+    var gl = G3D.gl, cv = G3D.canvas;
+    var dpr = Math.min(window.devicePixelRatio || 1, CFG3D.dprMax);
+    var W = Math.max(2, Math.round(stage.w * dpr)), Hh = Math.max(2, Math.round(stage.h * dpr));
+    if (cv.width !== W || cv.height !== Hh) { cv.width = W; cv.height = Hh; cv.style.width = stage.w + 'px'; cv.style.height = stage.h + 'px'; }
+    gl.viewport(0, 0, W, Hh);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    var m = t3dMat(0, 0, 0, 1, 1, false);
+    /* 城市纹理（透明底，叠在舞台辐射渐变上） */
+    if (G3D.bgQuad && G3D.bgQuad.verts) {
+      gl.useProgram(G3D.texProg);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, G3D.tex);
+      gl.uniform1i(G3D.texLocs.uTex, 0);
+      gl.uniformMatrix4fv(G3D.texLocs.uM, false, m);
+      gl.bindBuffer(gl.ARRAY_BUFFER, G3D.bgQuad.buf);
+      gl.enableVertexAttribArray(G3D.texLocs.aPos);
+      gl.vertexAttribPointer(G3D.texLocs.aPos, 2, gl.FLOAT, false, 8, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, G3D.bgQuad.verts);
+    }
+    gl.useProgram(G3D.prog);
+    gl.uniformMatrix4fv(G3D.locs.uM, false, m);
+    gl.uniform4f(G3D.locs.uTint, 1, 1, 1, 1);
+    gl.uniform3f(G3D.locs.uLine, 1, 1, 1);
+    function batch(b, line, alpha) {
+      if (!b || !b.verts) return;
+      if (line) gl.uniform3fv(G3D.locs.uLine, line);
+      if (alpha !== undefined) gl.uniform4f(G3D.locs.uTint, 1, 1, 1, alpha);
+      g3dBindFlat(b);
+      gl.drawArrays(gl.TRIANGLES, 0, b.verts);
+    }
+    batch(G3D.shared.grid);
+    batch(G3D.shared.roadCas);
+    batch(G3D.shared.road);
+    batch(G3D.shared.watBig);
+    batch(G3D.shared.watSmall);
+    batch(G3D.shared.lake);
+    var lk;
+    for (lk in G3D.lineBufs) if (lineVisible(lk)) batch(G3D.lineBufs[lk].plat, null, isTram(lk) ? 0.6 : 0.55);
+    gl.uniform4f(G3D.locs.uTint, 1, 1, 1, 1);
+    for (lk in G3D.lineBufs) {
+      if (!lineVisible(lk)) continue;
+      batch(G3D.lineBufs[lk].bed);
+      batch(G3D.lineBufs[lk].rail, t3dHex((LINE_BY_KEY[lk] || {}).color || '#888888'));
+    }
+    for (lk in G3D.stBufs) if (lineVisible(lk)) batch(G3D.stBufs[lk], t3dHex((LINE_BY_KEY[lk] || {}).color || '#888888'));
+    G3D.draws++;
+  }
+  function setMap3D(on) {
+    on = !!on && G3D.ready;
+    G3D.enabled = on;
+    var st = $('stage');
+    if (st) st.classList.toggle('g3d', on);
+    G3D.dirty = true;
+    if (on) { g3dDraw(); G3D.dirty = false; }
+  }
+  function initMap3D() {
+    var m0 = /[?&]g3d=(0|1)/.exec(location.search);
+    if (m0 && m0[1] === '0') { G3D.reason = 'url-off'; return; }
+    var canvas = document.createElement('canvas');
+    canvas.id = 'map3d';
+    var gl = null;
+    try { gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: true }) || canvas.getContext('experimental-webgl'); } catch (e0) { gl = null; }
+    if (!gl) { G3D.reason = 'no-webgl'; return; }
+    var svgEl = document.querySelector('#stage svg');
+    if (!svgEl || !svgEl.parentNode) { G3D.reason = 'no-svg'; return; }
+    svgEl.parentNode.insertBefore(canvas, svgEl.nextSibling);
+    G3D.canvas = canvas; G3D.gl = gl;
+    var vs = gl.createShader(gl.VERTEX_SHADER), fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(vs, G3D_VS); gl.compileShader(vs);
+    gl.shaderSource(fs, G3D_FS); gl.compileShader(fs);
+    var prog = gl.createProgram();
+    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { G3D.reason = 'link'; return; }
+    G3D.prog = prog;
+    G3D.locs = {
+      aPos: gl.getAttribLocation(prog, 'aPos'), aCol: gl.getAttribLocation(prog, 'aCol'),
+      aLine: gl.getAttribLocation(prog, 'aLine'),
+      uM: gl.getUniformLocation(prog, 'uM'), uLine: gl.getUniformLocation(prog, 'uLine'),
+      uTint: gl.getUniformLocation(prog, 'uTint')
+    };
+    var tvs = gl.createShader(gl.VERTEX_SHADER), tfs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(tvs, G3D_TVS); gl.compileShader(tvs);
+    gl.shaderSource(tfs, G3D_TFS); gl.compileShader(tfs);
+    var tprog = gl.createProgram();
+    gl.attachShader(tprog, tvs); gl.attachShader(tprog, tfs); gl.linkProgram(tprog);
+    if (!gl.getProgramParameter(tprog, gl.LINK_STATUS)) { G3D.reason = 'tex-link'; return; }
+    G3D.texProg = tprog;
+    G3D.texLocs = { aPos: gl.getAttribLocation(tprog, 'aPos'), uM: gl.getUniformLocation(tprog, 'uM'), uTex: gl.getUniformLocation(tprog, 'uTex') };
+    /* 城市纹理：与 buildBackground 同一套随机序（mulberry(20260318)）与配色 */
+    var texCv = document.createElement('canvas');
+    texCv.width = 256; texCv.height = 256;
+    var c2 = texCv.getContext('2d');
+    c2.clearRect(0, 0, 256, 256);
+    var rnd = mulberry(20260318), sc = 256 / 96;
+    for (var i2 = 0; i2 < 7; i2++) {
+      var bw = 14 + rnd() * 26, bh = 11 + rnd() * 20;
+      c2.fillStyle = i2 % 3 === 0 ? '#e9e4d8' : '#eee9dd';
+      var rx = rnd() * (96 - bw) * sc, ry = rnd() * (96 - bh) * sc;
+      c2.beginPath();
+      if (c2.roundRect) c2.roundRect(rx, ry, bw * sc, bh * sc, 2.5 * sc);
+      else c2.rect(rx, ry, bw * sc, bh * sc);
+      c2.fill();
+    }
+    var tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCv);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    G3D.tex = tex;
+    var q = [MAPBOX.x, MAPBOX.y, MAPBOX.x + MAPBOX.w, MAPBOX.y, MAPBOX.x + MAPBOX.w, MAPBOX.y + MAPBOX.h,
+      MAPBOX.x, MAPBOX.y, MAPBOX.x + MAPBOX.w, MAPBOX.y + MAPBOX.h, MAPBOX.x, MAPBOX.y + MAPBOX.h];
+    G3D.bgQuad = g3dUploadQuad(new Float32Array(q));
+    g3dBuildAll();
+    G3D.ready = true;
+    G3D.reason = 'ok';
+    setMap3D(true);
+  }
+  function g3dUploadQuad(d) {
+    var gl = G3D.gl, buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, d, gl.STATIC_DRAW);
+    return { buf: buf, verts: d.length / 2 };
+  }
+
   /* ==================================== 列车 3D 层（WebGL 1，零依赖手写；?t3d=0 可关） =====
      分工：SVG 仍负责几何缓存、命中与自检基准（transform 照常更新，作为回退显示）；
      本层每帧按同一套 route 参数取每节车的位置/朝向，用「军械投影」（俯视 + 高度向上抬）
@@ -2427,6 +2801,7 @@
   var popupId = null, popupEta = null, popupEtaAt = 0, popupEtaAnchor = null, popupEtaReal = null, lastTapHandled = 0, lastGestureEnd = 0;
 
   function applyView() {
+    G3D.dirty = true;
     $('viewport').setAttribute('transform',
       'translate(' + f2(view.tx) + ',' + f2(view.ty) + ') scale(' + view.k.toFixed(4) + ')');
   }
@@ -4083,6 +4458,7 @@
     initTrains();
     buildTrains();
     initTrains3D();
+    initMap3D();
     buildNextMarks();
     buildStationList();
     resetAllTrains();
@@ -4145,6 +4521,7 @@
         renderTrains();
       }
       interpolateTrains();          // 位置每帧跟（几何仍按需重画）
+      if (G3D.dirty) { G3D.dirty = false; g3dDraw(); }   // 底图/轨道/站点 WebGL 层：只在视口/筛选变化时重画
       drawTrains3D();               // 列车 3D 层（WebGL；不可用或被关时内部直接返回）
       updateNextMarks(dtRaw);
       updateTrainPills();
@@ -5187,6 +5564,22 @@
       var ok = need.every(function (k) { return !!T3D.meshes[k] && T3D.meshes[k].verts >= 120; });
       chk.__t3dmesh = need.join(' ') + ' · 顶点合计=' + T3D.verts;
       return ok && T3D.verts < 60000;
+    })());
+
+    chk('底图 WebGL 层：网格/道路/水体/轨道/站点批次就绪，SVG 图元按开关隐去（注记保留）', (function () {
+      if (!G3D.ready) return false;
+      G3D.dirty = true; g3dDraw();
+      var lk2 = Object.keys(G3D.lineBufs).length, sk = Object.keys(G3D.stBufs).length;
+      var roadVerts = (G3D.shared.road && G3D.shared.road.verts || 0) + (G3D.shared.roadCas && G3D.shared.roadCas.verts || 0);
+      var hidden = getComputedStyle($('roads')).visibility === 'hidden' && getComputedStyle($('rails')).visibility === 'hidden' &&
+        getComputedStyle($('stations')).visibility === 'hidden';
+      var keep = getComputedStyle($('wlabels')).visibility !== 'hidden';
+      setMap3D(false);
+      var shown = getComputedStyle($('roads')).visibility !== 'hidden';
+      setMap3D(true);
+      chk.__g3d = '道路顶点=' + roadVerts + ' 线路批=' + lk2 + ' 站点批=' + sk + ' 顶点合计=' + G3D.verts +
+        ' 帧=' + G3D.draws + ' · SVG隐=' + hidden + ' 注记留=' + keep + ' 关闭后显示=' + shown;
+      return roadVerts > 20000 && lk2 >= 15 && sk >= 10 && hidden && keep && shown;
     })());
 
     /* 自创线路（data-custom.js 手写并入，不经过生成器）：蛋仔专线 + 头像列车 */
