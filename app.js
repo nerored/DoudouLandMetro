@@ -2993,12 +2993,20 @@
   var audio = {
     ctx: null, master: null, bgmGain: null, synth: null, fileEl: null, useFile: false,
     on: false,             // 默认关闭；用户点顶部中间的「🔇 声音关闭」开启（手势内解锁）
-    vol: 0.6, announcements: 0, ttsOK: false, ttsSilent: false, ttsError: null, pendingAt: 0
+    vol: 0.6, announcements: 0, ttsOK: false, ttsSilent: false, ttsError: null, pendingAt: 0,
+    clipSrc: null, clipEl: null, clipError: ''   // 车站录音（futian.m4a）的播放句柄 / 失败记录
   };
 
   /* 想用真实录音当 BGM：把文件放进仓库（如 audio/bgm.mp3）并把下面这行改成 'audio/bgm.mp3'。
      留空（默认）则只用下面实时合成的环境声，也不会发出任何多余请求。 */
   var BGM_FILE = '';
+
+  /* —— 车站报站录音（用户提供）——
+     键 = '线路key|站id|时机'，值 = 仓库里的音频文件名（相对路径，零依赖、file:// 也能用）。
+     命中时该条报站的**中英 TTS 整条换成录音**（字幕照常显示两行）；文件拉不到/解码失败会自动回退到这句话的 TTS 文本。
+     目前只有 S3（资阳线）福田站的「到站」：futian.m4a（AAC-LC 48kHz 17.0s）。 */
+  var VOICE_CLIPS = { 'S3|s311|open': 'futian.m4a' };
+  function voiceClipFor(lineKey, stationId, kind) { return VOICE_CLIPS[lineKey + '|' + stationId + '|' + kind] || null; }
 
   function bgmEnabled(flag) {
     if (audio.bgmGain) audio.bgmGain.gain.value = flag ? 0.16 * audio.vol : 0;
@@ -3143,6 +3151,19 @@
 
   function pumpSpeech() {
     if (speechBusy || !speechQ.length) return;
+    var first = speechQ[0];
+    if (first.clip) {                       // 录音报站（S3 福田到站）：不走 speechSynthesis
+      speechQ.shift();
+      speechBusy = true;
+      var myClip = ++speechSeq;
+      startClip(first, function (failed) {
+        if (!speechBusy || myClip !== speechSeq) return;   // 已被关声音/新一句作废
+        speechBusy = false;
+        if (failed && first.text) speechQ.unshift({ text: first.text, rate: first.rate, lang: 'zh' });   // 退回声
+        setTimeout(pumpSpeech, 180);
+      });
+      return;
+    }
     if (!('speechSynthesis' in window)) { speechQ = []; return; }
     var item = speechQ.shift();
     var text = item.text;
@@ -3181,6 +3202,65 @@
     }, est);
     audio.announcements++;
     try { ss.speak(u); } catch (e2) { speechBusy = false; speechQ = []; }
+  }
+
+  /* —— 录音报站的播放与加载 ——
+     ① 主通道：fetch + decodeAudioData 走**已解锁的 AudioContext**（iOS 上不依赖新的用户手势）；
+     ② file:// 下 fetch 被拦：退回同目录的 <audio> 元素；
+     ③ 两条都失败：回调 failed=true，pumpSpeech 把该句的 TTS 文本放回队列（不静默）。
+     播放期间把环境声压到 5%，结束后由 bgmEnabled() 恢复；本函数是可替换的间接层（自检用桩拦截）。 */
+  var clipCache = {};
+  function startClip(item, cb) {
+    var name = item.clip;
+    var c = clipCache[name];
+    if (!c) {
+      c = clipCache[name] = { buffer: null, el: null, loading: null };
+      if (audio.ctx && window.fetch) {
+        c.loading = fetch(avatarSrc(name)).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.arrayBuffer();
+        }).then(function (ab) {
+          return new Promise(function (res, rej) { audio.ctx.decodeAudioData(ab, res, rej); });
+        }).then(function (buf) { c.buffer = buf; }).catch(function (e0) {
+          audio.clipError = String(e0 && e0.message || e0);
+        });
+      }
+    }
+    var done = false;
+    function fin(failed) { if (done) return; done = true; bgmEnabled(audio.on); if (cb) cb(!!failed); }
+    audio.clipSrc = null; audio.clipEl = null;
+    function viaEl() {
+      var el = c.el;
+      if (!el) { try { el = c.el = new Audio(avatarSrc(name)); el.preload = 'auto'; } catch (e0) { fin(true); return; } }
+      el.onended = function () { el.onended = el.onerror = null; fin(false); };
+      el.onerror = function () { el.onended = el.onerror = null; audio.clipError = 'element error'; fin(true); };
+      try { el.currentTime = 0; } catch (e1) { void e1; }
+      audio.clipEl = el;
+      if (audio.bgmGain) audio.bgmGain.gain.value = 0.05 * audio.vol;
+      var p = el.play();
+      if (p && p.catch) p.catch(function () { fin(true); });
+    }
+    function viaBuffer() {
+      var src = audio.ctx.createBufferSource();
+      src.buffer = c.buffer;
+      var g = audio.ctx.createGain();
+      g.gain.value = 0.9 * audio.vol;
+      src.connect(g); g.connect(audio.master);
+      src.onended = function () { fin(false); };
+      audio.clipSrc = src;
+      if (audio.bgmGain) audio.bgmGain.gain.value = 0.05 * audio.vol;
+      try { src.start(); } catch (e2) { audio.clipError = String(e2 && e2.message || e2); fin(true); }
+    }
+    if (c.buffer && audio.ctx) return viaBuffer();
+    if (c.loading) { c.loading.then(function () { if (c.buffer && audio.ctx) viaBuffer(); else viaEl(); }); return; }
+    viaEl();
+  }
+  /* 录音入队（替代这条报站的中英 TTS 对）：上限与 speak 一致，超了丢最旧 */
+  function enqueueClip(name, fallbackText) {
+    if (!audio.on || !name) return;
+    speechQ.push({ clip: name, text: fallbackText || '', rate: speechRate() });
+    while (speechQ.length > 3) speechQ.shift();
+    pumpSpeech();
   }
 
   /* 第一次触摸页面时初始化/解锁音频（浏览器要求用户手势；iOS 上 TTS 也需在手势里首次调用）。
@@ -3361,8 +3441,10 @@
     if (kind === 'open' || kind === 'arrive') chime('open');
     else if (kind === 'closing') chime('warn');
     else chime('close');
-    /* 成都地铁：先中文后英文（英文只在到站/换乘/终点信息上出现） */
-    speakPair(text, en);
+    /* 到站报站若配了车站录音（S3 福田站）：整条换成录音，中英 TTS 都不再念（字幕已在上方显示） */
+    var clipName = kind === 'open' ? voiceClipFor(r.lineKey, st.curId, kind) : null;
+    if (clipName) enqueueClip(clipName, text);
+    else speakPair(text, en);   /* 成都地铁：先中文后英文（英文只在到站/换乘/终点信息上出现） */
   }
 
   /* 报站字幕条（舞台下方居中；TTS 被限制时也能“看”到报站） */
@@ -3395,6 +3477,9 @@
     speechSeq++;
     speechBusy = false;
     if (speechWatch) { clearTimeout(speechWatch); speechWatch = null; }
+    /* 录音播报也算“正在说的那一句”：关声音要立刻掐掉（令牌失效后回调不会放行队列） */
+    if (audio.clipSrc) { try { audio.clipSrc.onended = null; audio.clipSrc.stop(); } catch (e1) { void e1; } audio.clipSrc = null; }
+    if (audio.clipEl) { try { audio.clipEl.onended = audio.clipEl.onerror = null; audio.clipEl.pause(); } catch (e2) { void e2; } audio.clipEl = null; }
     try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch (e) { void e; }
   }
 
@@ -4511,6 +4596,80 @@
       speechQ = []; speechBusy = false; speechSeq++;
       return ok;
     })(), chk.__nodup);
+
+    /* S3 福田录音的资源链路：真实 fetch → decodeAudioData（异步，等完成后才断言；用轮询代替定长等待） */
+    (function () {
+      var res = { buf: null, err: '' };
+      var ac = audio.ctx, own = false;
+      if (!ac) { try { var ACC = window.AudioContext || window.webkitAudioContext; ac = new ACC(); own = true; } catch (e0) { res.err = String(e0 && e0.message || e0); } }
+      if (ac && window.fetch) {
+        fetch(avatarSrc('futian.m4a')).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.arrayBuffer();
+        }).then(function (ab) {
+          return new Promise(function (ok2, bad2) { ac.decodeAudioData(ab, ok2, bad2); });
+        }).then(function (buf) {
+          res.buf = buf;
+          if (own && ac.close) ac.close();
+        }).catch(function (e1) { res.err = String(e1 && e1.message || e1); });
+      }
+      var tries = 0;
+      (function settle() {
+        tries++;
+        if (res.buf || res.err || tries > 6) {
+          chk('S3 福田录音能在浏览器里加载并解码（futian.m4a，约 17.0s）', !!res.buf && Math.abs(res.buf.duration - 17.045) < 0.6,
+            res.buf ? ('dur=' + res.buf.duration.toFixed(2) + 's ch=' + res.buf.numberOfChannels + ' sr=' + res.buf.sampleRate) : ('未完成 ' + res.err));
+          return;
+        }
+        setTimeout(settle, 700);
+      })();
+    })();
+
+    chk('S3 福田站到站播报 = 录音 futian.m4a（其他站/线路/时机不受影响；播放失败回退 TTS）', (function () {
+      var routeOk = voiceClipFor('S3', 's311', 'open') === 'futian.m4a' &&
+        !voiceClipFor('S3', 's311', 'closing') && !voiceClipFor('19', 's311', 'open') &&
+        !voiceClipFor('S3', 's366', 'open');
+      var bakOn = audio.on, bakActive = activeIdx, bakMult = ui.mult;
+      var prevQ = speechQ.slice(), prevBusy = speechBusy;
+      var played = [], realStart = startClip;
+      var s3i = -1, prevCur = null;
+      trains.forEach(function (t, i) { if (t.routeKey === 'S3') s3i = i; });
+      var clipOk = false, ttsOk = false, flipOk = false;
+      try {
+        startClip = function (item, cb) { played.push(item.clip); cb(false); };   // 桩：不真出声
+        setSound(true);
+        ui.mult = 1;
+        if (s3i >= 0) {
+          prevCur = trains[s3i].curId;
+          setActive(s3i);
+          state.curId = 's311';
+          speechQ = []; speechBusy = false; speechSeq++;
+          played = [];
+          announce(state, 'open');                    // 到站：应走录音、不落 TTS
+          clipOk = played.length === 1 && played[0] === 'futian.m4a' &&
+            speechQ.every(function (x) { return !x.clip; });
+          speechQ = []; speechBusy = false; speechSeq++; played = [];
+          announce(state, 'closing');                 // 关门：不受影响，照常 TTS
+          ttsOk = played.length === 0 && speechQ.length >= 1 &&
+            speechQ.every(function (x) { return !!x.text && !x.clip; });
+        }
+        /* 播放失败 → 该句的 TTS 文本放回队列（不静默） */
+        startClip = function (item, cb) { cb(true); };
+        speechQ = []; speechBusy = false; speechSeq++;
+        speechQ.push({ clip: 'none.m4a', text: '回退示例。', rate: 1 });
+        pumpSpeech();
+        flipOk = speechQ.length === 1 && speechQ[0].text === '回退示例。' && !speechQ[0].clip;
+      } finally {
+        startClip = realStart;
+        speechQ = prevQ.slice(); speechBusy = prevBusy; speechSeq++;
+        setSound(bakOn);
+        ui.mult = bakMult;
+        if (s3i >= 0 && prevCur !== null) trains[s3i].curId = prevCur;
+        try { setActive(bakActive); } catch (e0) { void e0; }
+      }
+      chk.__cliproute = '路由=' + routeOk + ' 福田到站=' + clipOk + ' 关门照常=' + ttsOk + ' 回退=' + flipOk;
+      return routeOk && clipOk && ttsOk && flipOk;
+    })(), chk.__cliproute);
 
     chk('速度选项 = 1x/2x/5x/10x，且高倍速下子步不丢步', (function () {
       var btns = $('segSpeed').querySelectorAll('button');
